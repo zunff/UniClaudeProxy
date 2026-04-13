@@ -94,11 +94,11 @@ async def send_non_streaming(
     debug_logger.debug("Anthropic passthrough request headers: %s", json.dumps(headers))
     debug_logger.debug("Anthropic passthrough request body: %s", json.dumps(body))
 
-    logger.info("Outgoing Anthropic passthrough request to %s", url)
+    logger.info("Outgoing Anthropic passthrough request [provider=%s] to %s", route.provider_name, url)
 
     resp = await client.post(url, json=body, headers=headers)
     if resp.status_code >= 400:
-        logger.error("Anthropic passthrough error (status=%d): %s", resp.status_code, resp.text[:1000])
+        logger.error("Anthropic passthrough error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, resp.text[:1000])
     resp.raise_for_status()
 
     return resp.json()
@@ -126,12 +126,12 @@ async def send_streaming(
     headers = _build_headers(route)
     client = await get_client()
 
-    logger.info("Outgoing Anthropic passthrough streaming request to %s", url)
+    logger.info("Outgoing Anthropic passthrough streaming request [provider=%s] to %s", route.provider_name, url)
 
     async with client.stream("POST", url, json=body, headers=headers) as resp:
         if resp.status_code >= 400:
             error_body = await resp.aread()
-            logger.error("Anthropic passthrough streaming error (status=%d): %s", resp.status_code, error_body.decode()[:1000])
+            logger.error("Anthropic passthrough streaming error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body.decode()[:1000])
             resp.raise_for_status()
 
         async for chunk in resp.aiter_bytes():

@@ -281,7 +281,7 @@ async def _handle_claude_passthrough(
         # Log raw response for debugging
         debug_logger.debug("Claude passthrough raw response: %s", json.dumps(raw_response))
     except Exception as e:
-        logger.error("Claude passthrough error: %s", e)
+        logger.error("Claude passthrough error [provider=%s]: %s", route.provider_name, e)
         return JSONResponse(
             status_code=502,
             content={
@@ -292,7 +292,7 @@ async def _handle_claude_passthrough(
 
     # Check if the response is an error
     if raw_response.get("code") != 0 and raw_response.get("success") is False:
-        logger.error("Upstream provider error: %s", raw_response.get("msg"))
+        logger.error("Upstream provider error [provider=%s]: %s", route.provider_name, raw_response.get("msg"))
         return JSONResponse(
             status_code=502,
             content={
@@ -360,7 +360,7 @@ async def _handle_react(
                     yield event
 
             except Exception as e:
-                logger.error("ReAct streaming error: %s", e)
+                logger.error("ReAct streaming error [provider=%s]: %s", route.provider_name, e)
                 error_event = json.dumps({
                     "type": "error",
                     "error": {"type": "api_error", "message": f"Streaming error: {e}"},
@@ -388,7 +388,7 @@ async def _handle_react(
             raw_response = await openai_provider.send_non_streaming(request, route)
             anthropic_response = from_openai_chat_response(raw_response, anthropic_model)
     except Exception as e:
-        logger.error("ReAct provider error: %s", e)
+        logger.error("ReAct provider error [provider=%s]: %s", route.provider_name, e)
         return JSONResponse(
             status_code=502,
             content={
@@ -400,7 +400,8 @@ async def _handle_react(
     anthropic_response = react_transform_response(anthropic_response, anthropic_model)
 
     logger.info(
-        "ReAct response: model=%s, stop_reason=%s, blocks=%d",
+        "ReAct response [provider=%s]: model=%s, stop_reason=%s, blocks=%d",
+        route.provider_name,
         anthropic_model,
         anthropic_response.get("stop_reason", "unknown"),
         len(anthropic_response.get("content", [])),
@@ -506,7 +507,7 @@ async def _handle_force_stream_non_streaming(
                             usage["input_tokens"] = u["input_tokens"]
 
     except Exception as e:
-        logger.error("Force-stream non-streaming error: %s", e)
+        logger.error("Force-stream non-streaming error [provider=%s]: %s", route.provider_name, e)
         return JSONResponse(
             status_code=502,
             content={
@@ -560,7 +561,7 @@ async def _handle_non_streaming(
         
         # Check if the response is an error
         if raw_response.get("code") != 0 and raw_response.get("success") is False:
-            logger.error("Upstream provider error: %s", raw_response.get("msg"))
+            logger.error("Upstream provider error [provider=%s]: %s", route.provider_name, raw_response.get("msg"))
             return JSONResponse(
                 status_code=502,
                 content={
@@ -569,7 +570,7 @@ async def _handle_non_streaming(
                 },
             )
     except Exception as e:
-        logger.error("Provider request failed: %s", e)
+        logger.error("Provider request failed [provider=%s]: %s", route.provider_name, e)
         return JSONResponse(
             status_code=502,
             content={
@@ -588,7 +589,7 @@ async def _handle_non_streaming(
         # Log converted response for debugging
         debug_logger.debug("Converted Anthropic response: %s", json.dumps(anthropic_response))
     except Exception as e:
-        logger.error("Response conversion failed: %s", e)
+        logger.error("Response conversion failed [provider=%s]: %s", route.provider_name, e)
         logger.error("Raw response that caused conversion error: %s", json.dumps(raw_response))
         return JSONResponse(
             status_code=500,
@@ -608,7 +609,8 @@ async def _handle_non_streaming(
             anthropic_response["usage"]["output_tokens"] = 0
 
     logger.info(
-        "Response: model=%s, stop_reason=%s, output_tokens=%d, input_tokens=%d",
+        "Response [provider=%s]: model=%s, stop_reason=%s, output_tokens=%d, input_tokens=%d",
+        route.provider_name,
         anthropic_model,
         anthropic_response.get("stop_reason", "unknown"),
         anthropic_response.get("usage", {}).get("output_tokens", 0),
@@ -661,7 +663,7 @@ async def _handle_streaming(
                     yield event
 
         except Exception as e:
-            logger.error("Streaming error: %s", e)
+            logger.error("Streaming error [provider=%s]: %s", route.provider_name, e)
             error_event = json.dumps({
                 "type": "error",
                 "error": {"type": "api_error", "message": f"Streaming error: {e}"},

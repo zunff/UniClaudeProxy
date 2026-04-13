@@ -95,7 +95,7 @@ async def send_non_streaming(
     headers = route.build_headers()
     client = await get_client()
 
-    logger.info("Outgoing request to %s", route.endpoint_url)
+    logger.info("Outgoing request [provider=%s] to %s", route.provider_name, route.endpoint_url)
 
     resp = await client.post(
         route.endpoint_url,
@@ -103,7 +103,7 @@ async def send_non_streaming(
         headers=headers,
     )
     if resp.status_code >= 400:
-        logger.error("Error response (status=%d): %s", resp.status_code, resp.text[:1000])
+        logger.error("Error response [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, resp.text[:1000])
     resp.raise_for_status()
 
     raw_text = resp.text.strip()
@@ -148,7 +148,7 @@ async def send_streaming(
     headers["Accept"] = "text/event-stream"
     client = await get_client()
 
-    logger.info("Outgoing streaming request to %s", route.endpoint_url)
+    logger.info("Outgoing streaming request [provider=%s] to %s", route.provider_name, route.endpoint_url)
 
     async with client.stream(
         "POST",
@@ -158,7 +158,7 @@ async def send_streaming(
     ) as resp:
         if resp.status_code >= 400:
             error_body = await resp.aread()
-            logger.error("Stream error (status=%d): %s", resp.status_code, error_body.decode("utf-8", errors="replace")[:1000])
+            logger.error("Stream error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body.decode("utf-8", errors="replace")[:1000])
         resp.raise_for_status()
         async for line in resp.aiter_lines():
             yield (line + "\n").encode("utf-8")

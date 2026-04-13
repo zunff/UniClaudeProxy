@@ -87,11 +87,11 @@ async def send_non_streaming(
     headers = _build_headers(route)
     client = await get_client()
 
-    logger.info("Outgoing Gemini request to %s", url)
+    logger.info("Outgoing Gemini request [provider=%s] to %s", route.provider_name, url)
 
     resp = await client.post(url, json=body, headers=headers)
     if resp.status_code >= 400:
-        logger.error("Gemini error (status=%d): %s", resp.status_code, resp.text[:1000])
+        logger.error("Gemini error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, resp.text[:1000])
     resp.raise_for_status()
 
     return resp.json()
@@ -122,12 +122,12 @@ async def send_streaming(
     headers["Accept"] = "text/event-stream"
     client = await get_client()
 
-    logger.info("Outgoing Gemini streaming request to %s", url)
+    logger.info("Outgoing Gemini streaming request [provider=%s] to %s", route.provider_name, url)
 
     async with client.stream("POST", url, json=body, headers=headers) as resp:
         if resp.status_code >= 400:
             error_body = await resp.aread()
-            logger.error("Gemini streaming error (status=%d): %s", resp.status_code, error_body.decode()[:1000])
+            logger.error("Gemini streaming error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body.decode()[:1000])
             resp.raise_for_status()
 
         async for line in resp.aiter_lines():

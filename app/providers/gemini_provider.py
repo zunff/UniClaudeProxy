@@ -60,12 +60,7 @@ def _build_headers(route: ResolvedRoute) -> dict[str, str]:
     Returns:
         dict[str, str] - Request headers.
     """
-    headers: dict[str, str] = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {route.provider.api_key}",
-    }
-    headers.update(route.provider.headers)
-    return headers
+    return route.build_headers()
 
 
 async def send_non_streaming(

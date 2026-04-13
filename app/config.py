@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -57,10 +58,19 @@ class ProviderConfig(BaseModel):
     """
 
     provider_type: str
-    api_key: str
+    api_key: str = ""
+    api_keys: list[str] = Field(default_factory=list)
     base_url: str
     headers: dict[str, str] = Field(default_factory=dict)
     models: dict[str, ModelConfig] = Field(default_factory=dict)
+
+    def resolved_api_keys(self) -> list[str]:
+        """Return the list of API keys, falling back to single api_key for backward compat."""
+        if self.api_keys:
+            return self.api_keys
+        if self.api_key:
+            return [self.api_key]
+        return []
 
 
 class ServerConfig(BaseModel):
@@ -87,7 +97,7 @@ class AppConfig(BaseModel):
     """
 
     server: ServerConfig = Field(default_factory=ServerConfig)
-    models: dict[str, str] = Field(default_factory=dict)
+    models: dict[str, str | list[str]] = Field(default_factory=dict)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
 
 
@@ -150,12 +160,23 @@ class ResolvedRoute:
     def build_headers(self) -> dict[str, str]:
         """Build the full set of headers for the outgoing request.
 
+        Uses round-robin selection across configured api_keys for load balancing.
+
         Returns:
             dict[str, str] - Merged headers with authorization.
         """
+        keys = self.provider.resolved_api_keys()
+        if keys:
+            with _counter_lock:
+                idx = _key_counters.get(self.provider_name, 0)
+                selected_key = keys[idx % len(keys)]
+                _key_counters[self.provider_name] = idx + 1
+        else:
+            selected_key = ""
+
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.provider.api_key}",
+            "Authorization": f"Bearer {selected_key}",
         }
         headers.update(self.provider.headers)
         return headers
@@ -163,6 +184,9 @@ class ResolvedRoute:
 
 _config: Optional[AppConfig] = None
 _config_path: Optional[str] = None
+_key_counters: dict[str, int] = {}
+_model_counters: dict[str, int] = {}
+_counter_lock = threading.Lock()
 
 
 def config_path() -> str:
@@ -213,6 +237,9 @@ def reload_config() -> AppConfig:
 def resolve_route(anthropic_model: str) -> ResolvedRoute:
     """Resolve an Anthropic model name to a provider route.
 
+    Supports both single mapping (string) and multiple mappings (list).
+    When a list is provided, uses round-robin to select one.
+
     Args:
         anthropic_model: str - The model name from the incoming Anthropic request.
 
@@ -228,9 +255,21 @@ def resolve_route(anthropic_model: str) -> ResolvedRoute:
     if mapping is None:
         raise ValueError(f"Model '{anthropic_model}' not found in config models mapping")
 
-    parts = mapping.split("/", 1)
+    # Normalize to list for round-robin
+    if isinstance(mapping, str):
+        candidates = [mapping]
+    else:
+        candidates = mapping
+
+    # Round-robin selection across candidates
+    with _counter_lock:
+        idx = _model_counters.get(anthropic_model, 0)
+        selected = candidates[idx % len(candidates)]
+        _model_counters[anthropic_model] = idx + 1
+
+    parts = selected.split("/", 1)
     if len(parts) != 2:
-        raise ValueError(f"Invalid model mapping format: '{mapping}'. Expected 'provider/model'")
+        raise ValueError(f"Invalid model mapping format: '{selected}'. Expected 'provider/model'")
 
     provider_name, model_id = parts
 

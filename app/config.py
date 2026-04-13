@@ -26,6 +26,7 @@ class ModelConfig(BaseModel):
         image_mode: str - How to handle images: "input_image", "save_and_ref", or "strip".
         image_dir: str | None - Directory to save images when using save_and_ref mode.
         system_replacements: dict[str, str] - String replacements applied to system prompt (key=target, value=replacement).
+        extra_body: dict[str, Any] - Extra parameters to include in the request body.
     """
 
     name: str
@@ -44,6 +45,7 @@ class ModelConfig(BaseModel):
     image_mode: str = "input_image"
     image_dir: Optional[str] = None
     system_replacements: dict[str, str] = Field(default_factory=dict)
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProviderConfig(BaseModel):
@@ -92,12 +94,12 @@ class AppConfig(BaseModel):
 
     Attributes:
         server: ServerConfig - Server binding settings.
-        models: dict[str, str] - Mapping of Anthropic model names to provider/model identifiers.
+        models: dict[str, str | list[str] | dict[str, int]] - Mapping of Anthropic model names to provider/model identifiers.
         providers: dict[str, ProviderConfig] - Provider configurations keyed by provider name.
     """
 
     server: ServerConfig = Field(default_factory=ServerConfig)
-    models: dict[str, str | list[str]] = Field(default_factory=dict)
+    models: dict[str, str | list[str] | dict[str, int]] = Field(default_factory=dict)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
 
 
@@ -146,6 +148,7 @@ class ResolvedRoute:
         self.parallel_tool_calls = model_config.parallel_tool_calls
         self.image_mode = model_config.image_mode
         self.image_dir = model_config.image_dir
+        self.extra_body = model_config.extra_body
 
         base = provider.base_url.rstrip("/")
         if self.provider_type == "claude":
@@ -239,6 +242,7 @@ def resolve_route(anthropic_model: str) -> ResolvedRoute:
 
     Supports both single mapping (string) and multiple mappings (list).
     When a list is provided, uses round-robin to select one.
+    Supports weighted load balancing by using dictionary format: {"provider/model": weight}
 
     Args:
         anthropic_model: str - The model name from the incoming Anthropic request.
@@ -255,17 +259,29 @@ def resolve_route(anthropic_model: str) -> ResolvedRoute:
     if mapping is None:
         raise ValueError(f"Model '{anthropic_model}' not found in config models mapping")
 
-    # Normalize to list for round-robin
-    if isinstance(mapping, str):
-        candidates = [mapping]
+    selected = ""
+    # Handle weighted load balancing
+    if isinstance(mapping, dict):
+        # Create weighted candidates list
+        weighted_candidates = []
+        for candidate, weight in mapping.items():
+            weighted_candidates.extend([candidate] * weight)
+        
+        # Round-robin selection across weighted candidates
+        with _counter_lock:
+            idx = _model_counters.get(anthropic_model, 0)
+            selected = weighted_candidates[idx % len(weighted_candidates)]
+            _model_counters[anthropic_model] = idx + 1
+    # Handle traditional list format
+    elif isinstance(mapping, list):
+        # Round-robin selection across candidates
+        with _counter_lock:
+            idx = _model_counters.get(anthropic_model, 0)
+            selected = mapping[idx % len(mapping)]
+            _model_counters[anthropic_model] = idx + 1
+    # Handle single string format
     else:
-        candidates = mapping
-
-    # Round-robin selection across candidates
-    with _counter_lock:
-        idx = _model_counters.get(anthropic_model, 0)
-        selected = candidates[idx % len(candidates)]
-        _model_counters[anthropic_model] = idx + 1
+        selected = mapping
 
     parts = selected.split("/", 1)
     if len(parts) != 2:

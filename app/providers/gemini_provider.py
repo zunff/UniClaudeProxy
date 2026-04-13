@@ -80,16 +80,18 @@ async def send_non_streaming(
         httpx.HTTPStatusError: If the provider returns a non-2xx status.
     """
     body = to_gemini_request(request, route.model_id)
+    # Add extra_body parameters
+    if route.extra_body:
+        body.update(route.extra_body)
     url = _build_endpoint_url(route, stream=False)
     headers = _build_headers(route)
     client = await get_client()
 
-    debug_logger.info(">>> GEMINI REQUEST (non-streaming) to %s", url)
-    debug_logger.info(">>> BODY:\n%s", json.dumps(body, indent=2, default=str)[:5000])
+    logger.info("Outgoing Gemini request to %s", url)
 
     resp = await client.post(url, json=body, headers=headers)
     if resp.status_code >= 400:
-        debug_logger.error("<<< GEMINI ERROR (status=%d):\n%s", resp.status_code, resp.text[:3000])
+        logger.error("Gemini error (status=%d): %s", resp.status_code, resp.text[:1000])
     resp.raise_for_status()
 
     return resp.json()
@@ -112,20 +114,21 @@ async def send_streaming(
         httpx.HTTPStatusError: If the provider returns a non-2xx status.
     """
     body = to_gemini_request(request, route.model_id)
+    # Add extra_body parameters
+    if route.extra_body:
+        body.update(route.extra_body)
     url = _build_endpoint_url(route, stream=True)
     headers = _build_headers(route)
     headers["Accept"] = "text/event-stream"
     client = await get_client()
 
-    debug_logger.info(">>> GEMINI REQUEST (streaming) to %s", url)
-    debug_logger.info(">>> BODY:\n%s", json.dumps(body, indent=2, default=str)[:5000])
+    logger.info("Outgoing Gemini streaming request to %s", url)
 
     async with client.stream("POST", url, json=body, headers=headers) as resp:
         if resp.status_code >= 400:
             error_body = await resp.aread()
-            debug_logger.error("<<< GEMINI ERROR (status=%d):\n%s", resp.status_code, error_body.decode()[:3000])
+            logger.error("Gemini streaming error (status=%d): %s", resp.status_code, error_body.decode()[:1000])
             resp.raise_for_status()
 
         async for line in resp.aiter_lines():
-            debug_logger.debug("<<< GEMINI SSE: %s", line[:200] if line else "")
             yield (line + "\n").encode("utf-8")

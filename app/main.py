@@ -150,43 +150,13 @@ async def create_message(request: Request) -> Any:
         )
 
     logger.info(
-        "Request: model=%s -> %s/%s (type=%s, responses=%s, stream=%s)",
+        "Request: model=%s -> %s/%s (type=%s, stream=%s)",
         anthropic_model,
         route.provider_name,
         route.model_id,
         route.provider_type,
-        route.use_responses,
         is_stream,
     )
-
-    debug_logger.info("=" * 80)
-    debug_logger.info("INCOMING ANTHROPIC REQUEST (model=%s, stream=%s)", anthropic_model, is_stream)
-    tools_list = body.get("tools") or []
-    debug_logger.info("TOOLS COUNT: %d", len(tools_list))
-    if tools_list:
-        for ti, t in enumerate(tools_list):
-            debug_logger.info("  TOOL[%d] name=%s type=%s", ti, t.get("name", "?"), t.get("type", "None"))
-    safe_body = {k: v for k, v in body.items() if k not in ("messages", "tools")}
-    safe_body["messages_count"] = len(body.get("messages", []))
-    safe_body["tools_count"] = len(tools_list)
-    debug_logger.info("REQUEST META: %s", json.dumps(safe_body, indent=2, default=str)[:3000])
-    for i, msg in enumerate(body.get("messages", [])):
-        role = msg.get("role", "?")
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            debug_logger.info("  MSG[%d] role=%s content=%s", i, role, content[:200])
-        elif isinstance(content, list):
-            types = [b.get("type", "?") if isinstance(b, dict) else "?" for b in content]
-            debug_logger.info("  MSG[%d] role=%s blocks=%s", i, role, types)
-            for j, block in enumerate(content):
-                if isinstance(block, dict):
-                    btype = block.get("type", "")
-                    if btype == "tool_use":
-                        debug_logger.info("    BLOCK[%d] tool_use name=%s id=%s", j, block.get("name"), block.get("id"))
-                    elif btype == "tool_result":
-                        debug_logger.info("    BLOCK[%d] tool_result tool_use_id=%s", j, block.get("tool_use_id"))
-                    elif btype == "text":
-                        debug_logger.info("    BLOCK[%d] text=%s", j, str(block.get("text", ""))[:200])
 
     replacements = route.model_config.system_replacements
     if replacements:
@@ -206,7 +176,6 @@ async def create_message(request: Request) -> Any:
 
     use_react = route.model_config.use_react
     if use_react:
-        debug_logger.info("REACT: enabled for model %s", anthropic_model)
         body = react_transform_request(body)
 
     from app.models import AnthropicRequest
@@ -265,9 +234,32 @@ async def _handle_claude_passthrough(
             """
             try:
                 async for chunk in anthropic_provider.send_streaming(raw_body, route):
+                    # Log streaming chunks for debugging
+                    debug_logger.debug("Claude passthrough streaming chunk: %s", chunk.decode("utf-8").strip())
+                    # Check if the chunk contains an error response
+                    chunk_str = chunk.decode("utf-8")
+                    if "data: {" in chunk_str:
+                        try:
+                            # Extract JSON data from SSE chunk
+                            data_start = chunk_str.find("data: ") + 6
+                            data_end = chunk_str.rfind("\n")
+                            if data_start < data_end:
+                                data_str = chunk_str[data_start:data_end]
+                                data = json.loads(data_str)
+                                # Check if it's an error response
+                                if data.get("code") != 0 and data.get("success") is False:
+                                    error_event = json.dumps({
+                                        "type": "error",
+                                        "error": {"type": "api_error", "message": data.get("msg", "Unknown provider error")},
+                                    })
+                                    yield f"event: error\ndata: {error_event}\n\n".encode("utf-8")
+                                    return
+                        except Exception:
+                            # If parsing fails, just pass the chunk through
+                            pass
                     yield chunk
             except Exception as e:
-                logger.error("Claude passthrough streaming error: %s\n%s", e, traceback.format_exc())
+                logger.error("Claude passthrough streaming error: %s", e)
                 error_event = json.dumps({
                     "type": "error",
                     "error": {"type": "api_error", "message": f"Provider error: {e}"},
@@ -286,8 +278,10 @@ async def _handle_claude_passthrough(
 
     try:
         raw_response = await anthropic_provider.send_non_streaming(raw_body, route)
+        # Log raw response for debugging
+        debug_logger.debug("Claude passthrough raw response: %s", json.dumps(raw_response))
     except Exception as e:
-        logger.error("Claude passthrough error: %s\n%s", e, traceback.format_exc())
+        logger.error("Claude passthrough error: %s", e)
         return JSONResponse(
             status_code=502,
             content={
@@ -295,6 +289,29 @@ async def _handle_claude_passthrough(
                 "error": {"type": "api_error", "message": f"Provider error: {e}"},
             },
         )
+
+    # Check if the response is an error
+    if raw_response.get("code") != 0 and raw_response.get("success") is False:
+        logger.error("Upstream provider error: %s", raw_response.get("msg"))
+        return JSONResponse(
+            status_code=502,
+            content={
+                "type": "error",
+                "error": {"type": "api_error", "message": raw_response.get("msg", "Unknown provider error")},
+            },
+        )
+
+    # Ensure usage field exists with input_tokens and output_tokens
+    if "usage" not in raw_response:
+        raw_response["usage"] = {"input_tokens": 0, "output_tokens": 0}
+    else:
+        if "input_tokens" not in raw_response["usage"]:
+            raw_response["usage"]["input_tokens"] = 0
+        if "output_tokens" not in raw_response["usage"]:
+            raw_response["usage"]["output_tokens"] = 0
+
+    # Log final response for debugging
+    debug_logger.debug("Claude passthrough final response: %s", json.dumps(raw_response))
 
     return JSONResponse(content=raw_response)
 
@@ -343,7 +360,7 @@ async def _handle_react(
                     yield event
 
             except Exception as e:
-                logger.error("ReAct streaming error: %s\n%s", e, traceback.format_exc())
+                logger.error("ReAct streaming error: %s", e)
                 error_event = json.dumps({
                     "type": "error",
                     "error": {"type": "api_error", "message": f"Streaming error: {e}"},
@@ -371,7 +388,7 @@ async def _handle_react(
             raw_response = await openai_provider.send_non_streaming(request, route)
             anthropic_response = from_openai_chat_response(raw_response, anthropic_model)
     except Exception as e:
-        logger.error("ReAct provider error: %s\n%s", e, traceback.format_exc())
+        logger.error("ReAct provider error: %s", e)
         return JSONResponse(
             status_code=502,
             content={
@@ -433,6 +450,8 @@ async def _handle_force_stream_non_streaming(
         current_block: dict | None = None
 
         async for event_str in converter:
+            # Log streaming events for debugging
+            debug_logger.debug("Force-stream event: %s", event_str.strip())
             for line in event_str.strip().split("\n"):
                 if line.startswith("data: "):
                     try:
@@ -483,9 +502,11 @@ async def _handle_force_stream_non_streaming(
                         u = evt.get("usage", {})
                         if u.get("output_tokens"):
                             usage["output_tokens"] = u["output_tokens"]
+                        if u.get("input_tokens"):
+                            usage["input_tokens"] = u["input_tokens"]
 
     except Exception as e:
-        logger.error("Force-stream non-streaming error: %s\n%s", e, traceback.format_exc())
+        logger.error("Force-stream non-streaming error: %s", e)
         return JSONResponse(
             status_code=502,
             content={
@@ -534,8 +555,21 @@ async def _handle_non_streaming(
             raw_response = await gemini_provider.send_non_streaming(request, route)
         else:
             raw_response = await openai_provider.send_non_streaming(request, route)
+        # Log raw response for debugging
+        debug_logger.debug("Raw provider response: %s", json.dumps(raw_response))
+        
+        # Check if the response is an error
+        if raw_response.get("code") != 0 and raw_response.get("success") is False:
+            logger.error("Upstream provider error: %s", raw_response.get("msg"))
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "type": "error",
+                    "error": {"type": "api_error", "message": raw_response.get("msg", "Unknown provider error")},
+                },
+            )
     except Exception as e:
-        logger.error("Provider request failed: %s\n%s", e, traceback.format_exc())
+        logger.error("Provider request failed: %s", e)
         return JSONResponse(
             status_code=502,
             content={
@@ -551,8 +585,11 @@ async def _handle_non_streaming(
             anthropic_response = from_openai_responses_response(raw_response, anthropic_model)
         else:
             anthropic_response = from_openai_chat_response(raw_response, anthropic_model)
+        # Log converted response for debugging
+        debug_logger.debug("Converted Anthropic response: %s", json.dumps(anthropic_response))
     except Exception as e:
-        logger.error("Response conversion failed: %s\n%s", e, traceback.format_exc())
+        logger.error("Response conversion failed: %s", e)
+        logger.error("Raw response that caused conversion error: %s", json.dumps(raw_response))
         return JSONResponse(
             status_code=500,
             content={
@@ -561,11 +598,21 @@ async def _handle_non_streaming(
             },
         )
 
+    # Ensure usage field exists with input_tokens and output_tokens
+    if "usage" not in anthropic_response:
+        anthropic_response["usage"] = {"input_tokens": 0, "output_tokens": 0}
+    else:
+        if "input_tokens" not in anthropic_response["usage"]:
+            anthropic_response["usage"]["input_tokens"] = 0
+        if "output_tokens" not in anthropic_response["usage"]:
+            anthropic_response["usage"]["output_tokens"] = 0
+
     logger.info(
-        "Response: model=%s, stop_reason=%s, output_tokens=%d",
+        "Response: model=%s, stop_reason=%s, output_tokens=%d, input_tokens=%d",
         anthropic_model,
         anthropic_response.get("stop_reason", "unknown"),
         anthropic_response.get("usage", {}).get("output_tokens", 0),
+        anthropic_response.get("usage", {}).get("input_tokens", 0),
     )
 
     return JSONResponse(content=anthropic_response)
@@ -597,18 +644,24 @@ async def _handle_streaming(
                 _pi = build_tool_param_index(request.tools) if request.tools else None
                 raw_stream = gemini_provider.send_streaming(request, route)
                 async for event in stream_gemini_to_anthropic(raw_stream, anthropic_model, param_index=_pi):
+                    # Log streaming events for debugging
+                    debug_logger.debug("Streaming event: %s", event.strip())
                     yield event
             elif route.use_responses:
                 raw_stream = openai_provider.send_streaming(request, route)
                 async for event in stream_openai_responses_to_anthropic(raw_stream, anthropic_model, tool_mapping=route.tool_mapping or None):
+                    # Log streaming events for debugging
+                    debug_logger.debug("Streaming event: %s", event.strip())
                     yield event
             else:
                 raw_stream = openai_provider.send_streaming(request, route)
                 async for event in stream_openai_chat_to_anthropic(raw_stream, anthropic_model):
+                    # Log streaming events for debugging
+                    debug_logger.debug("Streaming event: %s", event.strip())
                     yield event
 
         except Exception as e:
-            logger.error("Streaming error: %s\n%s", e, traceback.format_exc())
+            logger.error("Streaming error: %s", e)
             error_event = json.dumps({
                 "type": "error",
                 "error": {"type": "api_error", "message": f"Streaming error: {e}"},

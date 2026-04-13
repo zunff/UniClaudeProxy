@@ -48,7 +48,7 @@ def _build_request_body(request: AnthropicRequest, route: ResolvedRoute) -> dict
         dict[str, Any] - The provider-specific request body.
     """
     if route.use_responses:
-        return to_openai_responses_request(
+        body = to_openai_responses_request(
             request,
             route.model_id,
             inject_context=route.inject_context,
@@ -61,11 +61,18 @@ def _build_request_body(request: AnthropicRequest, route: ResolvedRoute) -> dict
             image_mode=route.image_mode,
             image_dir=route.image_dir,
         )
-    return to_openai_chat_request(
-        request,
-        route.model_id,
-        max_output_tokens=route.max_output_tokens,
-    )
+    else:
+        body = to_openai_chat_request(
+            request,
+            route.model_id,
+            max_output_tokens=route.max_output_tokens,
+        )
+    
+    # Add extra_body parameters
+    if route.extra_body:
+        body.update(route.extra_body)
+    
+    return body
 
 
 async def send_non_streaming(
@@ -88,8 +95,7 @@ async def send_non_streaming(
     headers = route.build_headers()
     client = await get_client()
 
-    debug_logger.info(">>> OUTGOING REQUEST (non-streaming) to %s", route.endpoint_url)
-    debug_logger.info(">>> BODY:\n%s", json.dumps(body, indent=2, default=str)[:5000])
+    logger.info("Outgoing request to %s", route.endpoint_url)
 
     resp = await client.post(
         route.endpoint_url,
@@ -97,17 +103,21 @@ async def send_non_streaming(
         headers=headers,
     )
     if resp.status_code >= 400:
-        debug_logger.error("<<< ERROR RESPONSE (status=%d):\n%s", resp.status_code, resp.text[:3000])
+        logger.error("Error response (status=%d): %s", resp.status_code, resp.text[:1000])
     resp.raise_for_status()
 
     raw_text = resp.text.strip()
-    debug_logger.info("<<< RESPONSE (status=%d):\n%s", resp.status_code, raw_text[:3000])
 
     if not raw_text:
         raise ValueError(f"Provider returned empty response (status {resp.status_code})")
 
     try:
-        return resp.json()
+        response_data = resp.json()
+        # Check if the response contains an error
+        if response_data.get("code") != 0 and response_data.get("success") is False:
+            logger.error("Provider error response: %s", response_data.get("msg"))
+            raise ValueError(f"Provider returned error: {response_data.get('msg', 'Unknown error')}")
+        return response_data
     except Exception as e:
         logger.error("Failed to parse provider response: %s | Body: %s", e, raw_text[:500])
         raise ValueError(f"Provider returned non-JSON response: {raw_text[:200]}") from e
@@ -138,13 +148,7 @@ async def send_streaming(
     headers["Accept"] = "text/event-stream"
     client = await get_client()
 
-    debug_logger.info(">>> OUTGOING REQUEST (streaming) to %s", route.endpoint_url)
-    outgoing_tools = body.get("tools", [])
-    debug_logger.info(">>> OUTGOING TOOLS COUNT: %d", len(outgoing_tools))
-    if outgoing_tools:
-        for oti, ot in enumerate(outgoing_tools[:5]):
-            debug_logger.info(">>>   TOOL[%d] name=%s type=%s", oti, ot.get("name", ot.get("function", {}).get("name", "?")), ot.get("type", "?"))
-    debug_logger.info(">>> BODY:\n%s", json.dumps(body, indent=2, default=str)[:5000])
+    logger.info("Outgoing streaming request to %s", route.endpoint_url)
 
     async with client.stream(
         "POST",
@@ -154,9 +158,7 @@ async def send_streaming(
     ) as resp:
         if resp.status_code >= 400:
             error_body = await resp.aread()
-            debug_logger.error("<<< STREAM ERROR (status=%d):\n%s", resp.status_code, error_body.decode("utf-8", errors="replace")[:3000])
+            logger.error("Stream error (status=%d): %s", resp.status_code, error_body.decode("utf-8", errors="replace")[:1000])
         resp.raise_for_status()
         async for line in resp.aiter_lines():
-            if line.strip():
-                debug_logger.info("<<< SSE LINE: %s", line[:500])
             yield (line + "\n").encode("utf-8")

@@ -7,7 +7,7 @@ import httpx
 from app.config import ResolvedRoute
 
 logger = logging.getLogger("anyclaude.provider")
-debug_logger = logging.getLogger("anyclaude.debug")
+debug_logger = logging.getLogger("uniclaudeproxy.debug")
 
 _client: httpx.AsyncClient | None = None
 
@@ -62,6 +62,9 @@ def _build_body(raw_body: dict[str, Any], route: ResolvedRoute) -> dict[str, Any
     """
     body = dict(raw_body)
     body["model"] = route.model_id
+    # Add extra_body parameters
+    if route.extra_body:
+        body.update(route.extra_body)
     return body
 
 
@@ -86,11 +89,16 @@ async def send_non_streaming(
     headers = _build_headers(route)
     client = await get_client()
 
-    debug_logger.info(">>> ANTHROPIC PASSTHROUGH (non-streaming) to %s", url)
+    # Log request details for debugging
+    debug_logger.debug("Anthropic passthrough request URL: %s", url)
+    debug_logger.debug("Anthropic passthrough request headers: %s", json.dumps(headers))
+    debug_logger.debug("Anthropic passthrough request body: %s", json.dumps(body))
+
+    logger.info("Outgoing Anthropic passthrough request to %s", url)
 
     resp = await client.post(url, json=body, headers=headers)
     if resp.status_code >= 400:
-        debug_logger.error("<<< ANTHROPIC ERROR (status=%d):\n%s", resp.status_code, resp.text[:3000])
+        logger.error("Anthropic passthrough error (status=%d): %s", resp.status_code, resp.text[:1000])
     resp.raise_for_status()
 
     return resp.json()
@@ -118,12 +126,12 @@ async def send_streaming(
     headers = _build_headers(route)
     client = await get_client()
 
-    debug_logger.info(">>> ANTHROPIC PASSTHROUGH (streaming) to %s", url)
+    logger.info("Outgoing Anthropic passthrough streaming request to %s", url)
 
     async with client.stream("POST", url, json=body, headers=headers) as resp:
         if resp.status_code >= 400:
             error_body = await resp.aread()
-            debug_logger.error("<<< ANTHROPIC ERROR (status=%d):\n%s", resp.status_code, error_body.decode()[:3000])
+            logger.error("Anthropic passthrough streaming error (status=%d): %s", resp.status_code, error_body.decode()[:1000])
             resp.raise_for_status()
 
         async for chunk in resp.aiter_bytes():

@@ -17,6 +17,65 @@ debug_logger = logging.getLogger("anyclaude.debug")
 _client: httpx.AsyncClient | None = None
 
 
+def _should_include_reasoning_content(route: ResolvedRoute) -> bool:
+    """Whether assistant reasoning_content should be sent for chat-completions."""
+    endpoint = route.endpoint_url.lower()
+    provider_name = route.provider_name.lower()
+    model_id = route.model_id.lower()
+    return ("deepseek" in endpoint) or ("deepseek" in provider_name) or ("deepseek" in model_id)
+
+
+def _log_request_body_summary(route: ResolvedRoute, body: dict[str, Any]) -> None:
+    """Log a compact request summary for troubleshooting provider issues."""
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        role_counts: dict[str, int] = {}
+        reasoning_messages = 0
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role", "unknown"))
+            role_counts[role] = role_counts.get(role, 0) + 1
+            if msg.get("reasoning_content"):
+                reasoning_messages += 1
+        logger.info(
+            "Request summary [provider=%s]: messages=%d roles=%s reasoning_messages=%d stream=%s",
+            route.provider_name,
+            len(messages),
+            role_counts,
+            reasoning_messages,
+            body.get("stream"),
+        )
+    else:
+        input_items = body.get("input")
+        if isinstance(input_items, list):
+            logger.info(
+                "Request summary [provider=%s]: input_items=%d stream=%s",
+                route.provider_name,
+                len(input_items),
+                body.get("stream"),
+            )
+
+
+def _sample_message_meta(messages: Any, limit: int = 3) -> list[dict[str, Any]]:
+    """Build a tiny metadata snapshot of chat messages for error logs."""
+    if not isinstance(messages, list):
+        return []
+    sample: list[dict[str, Any]] = []
+    for msg in messages[:limit]:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        content_len = len(content) if isinstance(content, str) else -1
+        sample.append({
+            "role": msg.get("role"),
+            "has_reasoning_content": bool(msg.get("reasoning_content")),
+            "has_tool_calls": bool(msg.get("tool_calls")),
+            "content_len": content_len,
+        })
+    return sample
+
+
 async def get_client() -> httpx.AsyncClient:
     """Get or create the shared async HTTP client.
 
@@ -66,6 +125,7 @@ def _build_request_body(request: AnthropicRequest, route: ResolvedRoute) -> dict
             request,
             route.model_id,
             max_output_tokens=route.max_output_tokens,
+            include_reasoning_content=_should_include_reasoning_content(route),
         )
     
     # Add extra_body parameters
@@ -96,6 +156,7 @@ async def send_non_streaming(
     client = await get_client()
 
     logger.info("Outgoing request [provider=%s] to %s", route.provider_name, route.endpoint_url)
+    _log_request_body_summary(route, body)
 
     resp = await client.post(
         route.endpoint_url,
@@ -104,6 +165,12 @@ async def send_non_streaming(
     )
     if resp.status_code >= 400:
         logger.error("Error response [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, resp.text[:1000])
+        if route.provider_name.lower().find("deepseek") >= 0 or route.endpoint_url.lower().find("deepseek") >= 0:
+            logger.error(
+                "DeepSeek diagnostics: include_reasoning_content=%s sample_messages=%s",
+                _should_include_reasoning_content(route),
+                _sample_message_meta(body.get("messages", []), limit=3),
+            )
     resp.raise_for_status()
 
     raw_text = resp.text.strip()
@@ -149,6 +216,7 @@ async def send_streaming(
     client = await get_client()
 
     logger.info("Outgoing streaming request [provider=%s] to %s", route.provider_name, route.endpoint_url)
+    _log_request_body_summary(route, body)
 
     async with client.stream(
         "POST",

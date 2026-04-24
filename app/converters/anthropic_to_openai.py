@@ -210,7 +210,10 @@ def _convert_tools_to_openai_responses(tools: list[AnthropicToolDef]) -> list[di
     return openai_tools
 
 
-def _build_chat_messages(request: AnthropicRequest) -> list[dict[str, Any]]:
+def _build_chat_messages(
+    request: AnthropicRequest,
+    include_reasoning_content: bool = False,
+) -> list[dict[str, Any]]:
     """Build OpenAI Chat Completions messages array from an Anthropic request.
 
     Args:
@@ -233,7 +236,11 @@ def _build_chat_messages(request: AnthropicRequest) -> list[dict[str, Any]]:
         if role == "user":
             _append_user_message(messages, content)
         elif role == "assistant":
-            _append_assistant_message(messages, content)
+            _append_assistant_message(
+                messages,
+                content,
+                include_reasoning_content=include_reasoning_content,
+            )
 
     return messages
 
@@ -293,7 +300,11 @@ def _append_user_message(messages: list[dict[str, Any]], content: Any) -> None:
             messages.append({"role": "user", "content": converted})
 
 
-def _append_assistant_message(messages: list[dict[str, Any]], content: Any) -> None:
+def _append_assistant_message(
+    messages: list[dict[str, Any]],
+    content: Any,
+    include_reasoning_content: bool = False,
+) -> None:
     """Append an assistant message to the messages list, handling tool calls.
 
     Args:
@@ -309,6 +320,7 @@ def _append_assistant_message(messages: list[dict[str, Any]], content: Any) -> N
         return
 
     text_parts = []
+    reasoning_parts = []
     tool_calls = []
 
     for block in content:
@@ -320,6 +332,10 @@ def _append_assistant_message(messages: list[dict[str, Any]], content: Any) -> N
 
         if block_type == "text":
             text_parts.append(block.get("text", ""))
+        elif block_type == "thinking":
+            thinking_text = block.get("thinking", "")
+            if thinking_text:
+                reasoning_parts.append(thinking_text)
         elif block_type == "tool_use":
             import json as _json
             tool_calls.append({
@@ -340,6 +356,9 @@ def _append_assistant_message(messages: list[dict[str, Any]], content: Any) -> N
 
     if tool_calls:
         msg["tool_calls"] = tool_calls
+
+    if include_reasoning_content and reasoning_parts:
+        msg["reasoning_content"] = "\n".join(reasoning_parts)
 
     messages.append(msg)
 
@@ -561,6 +580,7 @@ def to_openai_chat_request(
     request: AnthropicRequest,
     model_id: str,
     max_output_tokens: int | None = None,
+    include_reasoning_content: bool = False,
 ) -> dict[str, Any]:
     """Convert an Anthropic request to an OpenAI Chat Completions request body.
 
@@ -578,7 +598,10 @@ def to_openai_chat_request(
 
     body: dict[str, Any] = {
         "model": model_id,
-        "messages": _build_chat_messages(request),
+        "messages": _build_chat_messages(
+            request,
+            include_reasoning_content=include_reasoning_content,
+        ),
         "max_tokens": max_tok,
         "stream": request.stream,
     }

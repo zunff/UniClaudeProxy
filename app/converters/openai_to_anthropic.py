@@ -103,6 +103,13 @@ def from_openai_chat_response(
         message = choice.get("message", {})
         finish_reason = choice.get("finish_reason", "stop")
 
+        reasoning_content = message.get("reasoning_content")
+        if reasoning_content:
+            content_blocks.append({
+                "type": "thinking",
+                "thinking": reasoning_content,
+            })
+
         text = message.get("content")
         if text:
             content_blocks.append({"type": "text", "text": text})

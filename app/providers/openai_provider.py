@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import Any, AsyncIterator
 
 import httpx
@@ -19,10 +20,12 @@ _client: httpx.AsyncClient | None = None
 
 def _should_include_reasoning_content(route: ResolvedRoute) -> bool:
     """Whether assistant reasoning_content should be sent for chat-completions."""
-    endpoint = route.endpoint_url.lower()
-    provider_name = route.provider_name.lower()
-    model_id = route.model_id.lower()
-    return ("deepseek" in endpoint) or ("deepseek" in provider_name) or ("deepseek" in model_id)
+    # Default to enabled globally for OpenAI-compatible providers.
+    # Can be disabled via env for compatibility fallback.
+    disable_flag = os.getenv("ANYCLAUDE_DISABLE_REASONING_CONTENT", "").lower()
+    if disable_flag in {"1", "true", "yes", "on"}:
+        return False
+    return True
 
 
 def _log_request_body_summary(route: ResolvedRoute, body: dict[str, Any]) -> None:
@@ -30,20 +33,22 @@ def _log_request_body_summary(route: ResolvedRoute, body: dict[str, Any]) -> Non
     messages = body.get("messages")
     if isinstance(messages, list):
         role_counts: dict[str, int] = {}
-        reasoning_messages = 0
+        history_reasoning_messages = 0
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
             role = str(msg.get("role", "unknown"))
             role_counts[role] = role_counts.get(role, 0) + 1
             if msg.get("reasoning_content"):
-                reasoning_messages += 1
+                history_reasoning_messages += 1
+        include_reasoning_content = _should_include_reasoning_content(route)
         logger.info(
-            "Request summary [provider=%s]: messages=%d roles=%s reasoning_messages=%d stream=%s",
+            "Request summary [provider=%s]: messages=%d roles=%s history_reasoning_messages=%d include_reasoning_content=%s stream=%s",
             route.provider_name,
             len(messages),
             role_counts,
-            reasoning_messages,
+            history_reasoning_messages,
+            include_reasoning_content,
             body.get("stream"),
         )
     else:

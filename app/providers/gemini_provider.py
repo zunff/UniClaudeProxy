@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 from typing import Any, AsyncIterator
 
 import httpx
@@ -7,6 +8,14 @@ import httpx
 from app.config import ResolvedRoute
 from app.converters.anthropic_to_gemini import to_gemini_request
 from app.models import AnthropicRequest
+from app.providers.retry_utils import (
+    FirstByteTimeoutError,
+    policy_from_route,
+    route_key,
+    run_with_retry,
+    should_bypass_upstream_policy,
+    stream_with_retry,
+)
 
 logger = logging.getLogger("anyclaude.provider")
 debug_logger = logging.getLogger("anyclaude.debug")
@@ -89,12 +98,55 @@ async def send_non_streaming(
 
     logger.info("Outgoing Gemini request [provider=%s] to %s", route.provider_name, url)
 
-    resp = await client.post(url, json=body, headers=headers)
-    if resp.status_code >= 400:
-        logger.error("Gemini error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, resp.text[:1000])
-    resp.raise_for_status()
+    bypass, matched_rule = should_bypass_upstream_policy(route)
+    if bypass:
+        logger.info(
+            "Upstream policy bypassed [route=%s matched_rule=%s]",
+            route_key(route),
+            matched_rule,
+        )
+        resp = await client.post(url, json=body, headers=headers)
+        if resp.status_code >= 400:
+            logger.error("Gemini error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, resp.text[:1000])
+        resp.raise_for_status()
+        return resp.json()
 
-    return resp.json()
+    policy = policy_from_route(route, stream=False)
+
+    async def _send_once(first_byte_timeout_ms: int) -> dict[str, Any]:
+        timeout_seconds = first_byte_timeout_ms / 1000.0
+        async with client.stream("POST", url, json=body, headers=headers) as resp:
+            if resp.status_code >= 400:
+                error_body = (await resp.aread()).decode("utf-8", errors="replace")
+                logger.error("Gemini error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body[:1000])
+            resp.raise_for_status()
+
+            chunks: list[bytes] = []
+            iterator = resp.aiter_bytes()
+            try:
+                first_chunk = await asyncio.wait_for(iterator.__anext__(), timeout=timeout_seconds)
+            except asyncio.TimeoutError as exc:
+                raise FirstByteTimeoutError("Upstream did not return first byte in time") from exc
+            except StopAsyncIteration:
+                first_chunk = b""
+
+            if first_chunk:
+                chunks.append(first_chunk)
+            async for chunk in iterator:
+                chunks.append(chunk)
+
+        raw_text = b"".join(chunks).decode("utf-8", errors="replace").strip()
+        if not raw_text:
+            raise ValueError("Gemini returned empty response body")
+        return json.loads(raw_text)
+
+    return await run_with_retry(
+        _send_once,
+        policy=policy,
+        logger=logger,
+        provider_name=route.provider_name,
+        model_id=route.model_id,
+    )
 
 
 async def send_streaming(
@@ -124,11 +176,40 @@ async def send_streaming(
 
     logger.info("Outgoing Gemini streaming request [provider=%s] to %s", route.provider_name, url)
 
-    async with client.stream("POST", url, json=body, headers=headers) as resp:
-        if resp.status_code >= 400:
-            error_body = await resp.aread()
-            logger.error("Gemini streaming error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body.decode()[:1000])
-            resp.raise_for_status()
+    bypass, matched_rule = should_bypass_upstream_policy(route)
+    if bypass:
+        logger.info(
+            "Upstream policy bypassed [route=%s matched_rule=%s]",
+            route_key(route),
+            matched_rule,
+        )
+        async with client.stream("POST", url, json=body, headers=headers) as resp:
+            if resp.status_code >= 400:
+                error_body = await resp.aread()
+                logger.error("Gemini streaming error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body.decode()[:1000])
+                resp.raise_for_status()
 
-        async for line in resp.aiter_lines():
-            yield (line + "\n").encode("utf-8")
+            async for line in resp.aiter_lines():
+                yield (line + "\n").encode("utf-8")
+        return
+
+    policy = policy_from_route(route, stream=True)
+
+    async def _stream_once() -> AsyncIterator[bytes]:
+        async with client.stream("POST", url, json=body, headers=headers) as resp:
+            if resp.status_code >= 400:
+                error_body = await resp.aread()
+                logger.error("Gemini streaming error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body.decode()[:1000])
+                resp.raise_for_status()
+
+            async for line in resp.aiter_lines():
+                yield (line + "\n").encode("utf-8")
+
+    async for chunk in stream_with_retry(
+        _stream_once,
+        policy=policy,
+        logger=logger,
+        provider_name=route.provider_name,
+        model_id=route.model_id,
+    ):
+        yield chunk

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import asyncio
 from typing import Any, AsyncIterator
 
 import httpx
@@ -11,6 +12,14 @@ from app.converters.anthropic_to_openai import (
     to_openai_responses_request,
 )
 from app.models import AnthropicRequest
+from app.providers.retry_utils import (
+    FirstByteTimeoutError,
+    policy_from_route,
+    route_key,
+    run_with_retry,
+    should_bypass_upstream_policy,
+    stream_with_retry,
+)
 
 logger = logging.getLogger("anyclaude.provider")
 debug_logger = logging.getLogger("anyclaude.debug")
@@ -163,36 +172,95 @@ async def send_non_streaming(
     logger.info("Outgoing request [provider=%s] to %s", route.provider_name, route.endpoint_url)
     _log_request_body_summary(route, body)
 
-    resp = await client.post(
-        route.endpoint_url,
-        json=body,
-        headers=headers,
+    bypass, matched_rule = should_bypass_upstream_policy(route)
+    if bypass:
+        logger.info(
+            "Upstream policy bypassed [route=%s matched_rule=%s]",
+            route_key(route),
+            matched_rule,
+        )
+        resp = await client.post(
+            route.endpoint_url,
+            json=body,
+            headers=headers,
+        )
+        if resp.status_code >= 400:
+            logger.error("Error response [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, resp.text[:1000])
+            if route.provider_name.lower().find("deepseek") >= 0 or route.endpoint_url.lower().find("deepseek") >= 0:
+                logger.error(
+                    "DeepSeek diagnostics: include_reasoning_content=%s sample_messages=%s",
+                    _should_include_reasoning_content(route),
+                    _sample_message_meta(body.get("messages", []), limit=3),
+                )
+        resp.raise_for_status()
+        raw_text = resp.text.strip()
+        if not raw_text:
+            raise ValueError("Provider returned empty response body")
+        try:
+            response_data = resp.json()
+            if response_data.get("code") != 0 and response_data.get("success") is False:
+                logger.error("Provider error response: %s", response_data.get("msg"))
+                raise ValueError(f"Provider returned error: {response_data.get('msg', 'Unknown error')}")
+            return response_data
+        except Exception as e:
+            logger.error("Failed to parse provider response: %s | Body: %s", e, raw_text[:500])
+            raise ValueError(f"Provider returned non-JSON response: {raw_text[:200]}") from e
+
+    policy = policy_from_route(route, stream=False)
+
+    async def _send_once(first_byte_timeout_ms: int) -> dict[str, Any]:
+        timeout_seconds = first_byte_timeout_ms / 1000.0
+        async with client.stream(
+            "POST",
+            route.endpoint_url,
+            json=body,
+            headers=headers,
+        ) as resp:
+            if resp.status_code >= 400:
+                error_body = (await resp.aread()).decode("utf-8", errors="replace")
+                logger.error("Error response [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body[:1000])
+                if route.provider_name.lower().find("deepseek") >= 0 or route.endpoint_url.lower().find("deepseek") >= 0:
+                    logger.error(
+                        "DeepSeek diagnostics: include_reasoning_content=%s sample_messages=%s",
+                        _should_include_reasoning_content(route),
+                        _sample_message_meta(body.get("messages", []), limit=3),
+                    )
+                resp.raise_for_status()
+
+            chunks: list[bytes] = []
+            iterator = resp.aiter_bytes()
+            try:
+                first_chunk = await asyncio.wait_for(iterator.__anext__(), timeout=timeout_seconds)
+            except asyncio.TimeoutError as exc:
+                raise FirstByteTimeoutError("Upstream did not return first byte in time") from exc
+            except StopAsyncIteration:
+                first_chunk = b""
+
+            if first_chunk:
+                chunks.append(first_chunk)
+            async for chunk in iterator:
+                chunks.append(chunk)
+
+        raw_text = b"".join(chunks).decode("utf-8", errors="replace").strip()
+        if not raw_text:
+            raise ValueError("Provider returned empty response body")
+        try:
+            response_data = json.loads(raw_text)
+            if response_data.get("code") != 0 and response_data.get("success") is False:
+                logger.error("Provider error response: %s", response_data.get("msg"))
+                raise ValueError(f"Provider returned error: {response_data.get('msg', 'Unknown error')}")
+            return response_data
+        except Exception as e:
+            logger.error("Failed to parse provider response: %s | Body: %s", e, raw_text[:500])
+            raise ValueError(f"Provider returned non-JSON response: {raw_text[:200]}") from e
+
+    return await run_with_retry(
+        _send_once,
+        policy=policy,
+        logger=logger,
+        provider_name=route.provider_name,
+        model_id=route.model_id,
     )
-    if resp.status_code >= 400:
-        logger.error("Error response [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, resp.text[:1000])
-        if route.provider_name.lower().find("deepseek") >= 0 or route.endpoint_url.lower().find("deepseek") >= 0:
-            logger.error(
-                "DeepSeek diagnostics: include_reasoning_content=%s sample_messages=%s",
-                _should_include_reasoning_content(route),
-                _sample_message_meta(body.get("messages", []), limit=3),
-            )
-    resp.raise_for_status()
-
-    raw_text = resp.text.strip()
-
-    if not raw_text:
-        raise ValueError(f"Provider returned empty response (status {resp.status_code})")
-
-    try:
-        response_data = resp.json()
-        # Check if the response contains an error
-        if response_data.get("code") != 0 and response_data.get("success") is False:
-            logger.error("Provider error response: %s", response_data.get("msg"))
-            raise ValueError(f"Provider returned error: {response_data.get('msg', 'Unknown error')}")
-        return response_data
-    except Exception as e:
-        logger.error("Failed to parse provider response: %s | Body: %s", e, raw_text[:500])
-        raise ValueError(f"Provider returned non-JSON response: {raw_text[:200]}") from e
 
 
 async def send_streaming(
@@ -223,15 +291,48 @@ async def send_streaming(
     logger.info("Outgoing streaming request [provider=%s] to %s", route.provider_name, route.endpoint_url)
     _log_request_body_summary(route, body)
 
-    async with client.stream(
-        "POST",
-        route.endpoint_url,
-        json=body,
-        headers=headers,
-    ) as resp:
-        if resp.status_code >= 400:
-            error_body = await resp.aread()
-            logger.error("Stream error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body.decode("utf-8", errors="replace")[:1000])
-        resp.raise_for_status()
-        async for line in resp.aiter_lines():
-            yield (line + "\n").encode("utf-8")
+    bypass, matched_rule = should_bypass_upstream_policy(route)
+    if bypass:
+        logger.info(
+            "Upstream policy bypassed [route=%s matched_rule=%s]",
+            route_key(route),
+            matched_rule,
+        )
+        async with client.stream(
+            "POST",
+            route.endpoint_url,
+            json=body,
+            headers=headers,
+        ) as resp:
+            if resp.status_code >= 400:
+                error_body = await resp.aread()
+                logger.error("Stream error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body.decode("utf-8", errors="replace")[:1000])
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                yield (line + "\n").encode("utf-8")
+        return
+
+    policy = policy_from_route(route, stream=True)
+
+    async def _stream_once() -> AsyncIterator[bytes]:
+        async with client.stream(
+            "POST",
+            route.endpoint_url,
+            json=body,
+            headers=headers,
+        ) as resp:
+            if resp.status_code >= 400:
+                error_body = await resp.aread()
+                logger.error("Stream error [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body.decode("utf-8", errors="replace")[:1000])
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                yield (line + "\n").encode("utf-8")
+
+    async for chunk in stream_with_retry(
+        _stream_once,
+        policy=policy,
+        logger=logger,
+        provider_name=route.provider_name,
+        model_id=route.model_id,
+    ):
+        yield chunk

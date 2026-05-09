@@ -89,6 +89,35 @@ class ServerConfig(BaseModel):
     local_only: bool = True
 
 
+class UpstreamStreamTimeoutConfig(BaseModel):
+    """First-byte timeout config for streaming upstream requests."""
+
+    first_byte_timeout_ms: int = 8000
+
+
+class UpstreamNonStreamTimeoutConfig(BaseModel):
+    """First-byte timeout config for non-streaming upstream requests."""
+
+    first_byte_timeout_ms: int = 20000
+
+
+class UpstreamRetryConfig(BaseModel):
+    """Retry strategy for upstream requests."""
+
+    max_attempts: int = 3
+    interval_ms: int = 1000
+    total_timeout_ms: int = 45000
+
+
+class UpstreamConfig(BaseModel):
+    """Global upstream timeout and retry configuration."""
+
+    stream: UpstreamStreamTimeoutConfig = Field(default_factory=UpstreamStreamTimeoutConfig)
+    non_stream: UpstreamNonStreamTimeoutConfig = Field(default_factory=UpstreamNonStreamTimeoutConfig)
+    retry: UpstreamRetryConfig = Field(default_factory=UpstreamRetryConfig)
+    disabled_routes: list[str] = Field(default_factory=list)
+
+
 class AppConfig(BaseModel):
     """Root application configuration.
 
@@ -101,6 +130,7 @@ class AppConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     models: dict[str, str | list[str] | dict[str, int]] = Field(default_factory=dict)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+    upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
 
 
 class ResolvedRoute:
@@ -122,6 +152,7 @@ class ResolvedRoute:
         provider: ProviderConfig,
         model_id: str,
         model_config: ModelConfig,
+        upstream_config: UpstreamConfig,
     ):
         """Initialize a ResolvedRoute.
 
@@ -149,6 +180,7 @@ class ResolvedRoute:
         self.image_mode = model_config.image_mode
         self.image_dir = model_config.image_dir
         self.extra_body = model_config.extra_body
+        self.upstream_config = upstream_config
 
         base = provider.base_url.rstrip("/")
         if self.provider_type == "claude":
@@ -302,4 +334,5 @@ def resolve_route(anthropic_model: str) -> ResolvedRoute:
         provider=provider,
         model_id=model_id,
         model_config=model_cfg,
+        upstream_config=cfg.upstream,
     )

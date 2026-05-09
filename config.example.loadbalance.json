@@ -4,6 +4,23 @@
     "port": 9223,
     "local_only": true
   },
+  "upstream": {
+    "stream": {
+      "first_byte_timeout_ms": 8000
+    },
+    "non_stream": {
+      "first_byte_timeout_ms": 20000
+    },
+    "retry": {
+      "max_attempts": 3,
+      "interval_ms": 1000,
+      "total_timeout_ms": 45000
+    },
+    "disabled_routes": [
+      "glm1/glm-5.1",
+      "glm2/*"
+    ]
+  },
   "models": {
     "claude-sonnet-4-6": {"glm1/glm-5": 3, "glm2/glm-5": 1},
     "claude-opus-4-6": {"glm1/glm-5": 2, "glm2/glm-5": 1},

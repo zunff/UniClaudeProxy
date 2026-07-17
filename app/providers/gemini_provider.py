@@ -61,7 +61,11 @@ def _build_endpoint_url(route: ResolvedRoute, stream: bool) -> str:
 
 
 def _build_headers(route: ResolvedRoute) -> dict[str, str]:
-    """Build headers for Gemini request.
+    """Build headers for Gemini native generateContent API.
+
+    Native Gemini API authenticates via ``x-goog-api-key``, not
+    ``Authorization: Bearer``. Sending Bearer with an API key causes
+    Google to reject the request as UNAUTHENTICATED (401).
 
     Args:
         route: ResolvedRoute - Resolved routing information.
@@ -69,7 +73,16 @@ def _build_headers(route: ResolvedRoute) -> dict[str, str]:
     Returns:
         dict[str, str] - Request headers.
     """
-    return route.build_headers()
+    headers = route.build_headers()
+    # Drop Bearer — native Generative Language API rejects API keys as OAuth tokens.
+    headers.pop("Authorization", None)
+
+    if "x-goog-api-key" not in headers:
+        keys = route.provider.resolved_api_keys()
+        if keys:
+            headers["x-goog-api-key"] = keys[0]
+
+    return headers
 
 
 async def send_non_streaming(

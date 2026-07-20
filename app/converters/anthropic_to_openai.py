@@ -9,6 +9,20 @@ from app.models import (
     AnthropicToolDef,
 )
 
+# Reasoning models (GLM, etc.) count thinking tokens against max_tokens.
+# Claude Code permission hooks often send tiny budgets like 64; without headroom
+# the model fills the quota with reasoning and returns truncated/empty content.
+_REASONING_HEADROOM = 1024
+
+
+def _apply_reasoning_headroom(max_tok: int | None) -> int | None:
+    """Bump small max_tokens so thinking models can still emit visible text."""
+    if max_tok is None:
+        return None
+    if max_tok < _REASONING_HEADROOM:
+        return max_tok + _REASONING_HEADROOM
+    return max_tok
+
 
 def _toolu_to_fc(tool_id: str) -> str:
     """Convert Anthropic tool ID to OpenAI Responses API function call ID.
@@ -595,6 +609,7 @@ def to_openai_chat_request(
     max_tok = request.max_tokens
     if max_output_tokens is not None and max_tok is not None:
         max_tok = min(max_tok, max_output_tokens)
+    max_tok = _apply_reasoning_headroom(max_tok)
 
     body: dict[str, Any] = {
         "model": model_id,

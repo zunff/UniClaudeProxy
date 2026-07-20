@@ -6,6 +6,14 @@ from app.converters.gemini_to_anthropic import THOUGHT_SIG_SEP
 from app.models import AnthropicRequest
 from app.utils.images import detect_media_type
 
+# Fallback when replaying tool calls from another provider (e.g. load-balanced GLM).
+THOUGHT_SIGNATURE_SKIP = "skip_thought_signature_validator"
+
+# Gemini counts thinking tokens against maxOutputTokens. Clients (e.g. Claude Code
+# permission hooks) often send tiny max_tokens like 64; without headroom the model
+# spends the budget on thinking and returns truncated text with finishReason=MAX_TOKENS.
+_GEMINI_THINKING_HEADROOM = 1024
+
 
 def _extract_system_prompt(request: AnthropicRequest) -> str | None:
     """Extract system prompt from an Anthropic request.
@@ -250,6 +258,10 @@ def _build_assistant_parts(content: Any) -> list[dict[str, Any]]:
             if THOUGHT_SIG_SEP in raw_id:
                 _, encoded_sig = raw_id.split(THOUGHT_SIG_SEP, 1)
                 part["thoughtSignature"] = unquote(encoded_sig)
+            else:
+                # Required for Gemini 3 when history includes tool calls from
+                # non-Gemini providers or clients that don't preserve signatures.
+                part["thoughtSignature"] = THOUGHT_SIGNATURE_SKIP
 
             parts.append(part)
 
@@ -334,7 +346,10 @@ def to_gemini_request(
 
     gen_config: dict[str, Any] = {}
     if request.max_tokens:
-        gen_config["maxOutputTokens"] = request.max_tokens
+        max_out = request.max_tokens
+        if max_out < _GEMINI_THINKING_HEADROOM:
+            max_out = max_out + _GEMINI_THINKING_HEADROOM
+        gen_config["maxOutputTokens"] = max_out
     if request.temperature is not None:
         gen_config["temperature"] = request.temperature
     if request.top_p is not None:

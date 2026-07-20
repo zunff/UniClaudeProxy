@@ -211,7 +211,11 @@ def from_gemini_response(
 
     usage_meta = response_data.get("usageMetadata", {})
     input_tokens = usage_meta.get("promptTokenCount", 0)
-    output_tokens = usage_meta.get("candidatesTokenCount", 0)
+    # Include thinking tokens so usage reflects the real generation budget.
+    output_tokens = (
+        usage_meta.get("candidatesTokenCount", 0)
+        + usage_meta.get("thoughtsTokenCount", 0)
+    )
 
     return {
         "id": msg_id,
@@ -457,7 +461,10 @@ async def stream_gemini_to_anthropic(
 
             usage_meta = data.get("usageMetadata")
             if usage_meta:
-                output_tokens = usage_meta.get("candidatesTokenCount", output_tokens)
+                output_tokens = (
+                    usage_meta.get("candidatesTokenCount", 0)
+                    + usage_meta.get("thoughtsTokenCount", 0)
+                ) or output_tokens
                 input_tokens = usage_meta.get("promptTokenCount", input_tokens)
 
             candidates = data.get("candidates", [])

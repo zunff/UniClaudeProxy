@@ -98,7 +98,13 @@ async def get_client() -> httpx.AsyncClient:
     """
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=30.0))
+        _client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=30.0),
+            headers={
+                "User-Agent": "codex_cli_rs/0.47.0 (Windows 10.0.19043; x86_64)",
+                "originator": "codex_cli_rs",
+            },
+        )
     return _client
 
 

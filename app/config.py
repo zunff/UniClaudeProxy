@@ -212,6 +212,8 @@ class ResolvedRoute:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {selected_key}",
+            "User-Agent": "codex_cli_rs/0.47.0 (Windows 10.0.19043; x86_64)",
+            "originator": "codex_cli_rs",
         }
         headers.update(self.provider.headers)
         return headers

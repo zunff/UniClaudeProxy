@@ -29,7 +29,10 @@ async def get_client() -> httpx.AsyncClient:
     """
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=30.0))
+        _client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=30.0),
+            headers={"User-Agent": "claude-cli/1.0.53 (external, cli)"},
+        )
     return _client
 
 
@@ -52,6 +55,7 @@ def _build_headers(route: ResolvedRoute) -> dict[str, str]:
     """
     headers: dict[str, str] = {
         "Content-Type": "application/json",
+        "User-Agent": "claude-cli/1.0.53 (external, cli)",
     }
     headers.update(route.provider.headers)
     return headers

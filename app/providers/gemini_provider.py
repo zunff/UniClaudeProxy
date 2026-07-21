@@ -31,7 +31,10 @@ async def get_client() -> httpx.AsyncClient:
     """
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=30.0))
+        _client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=30.0),
+            headers={"User-Agent": "OpenAI/Python 1.68.0"},
+        )
     return _client
 
 

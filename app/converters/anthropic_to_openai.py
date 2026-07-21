@@ -14,6 +14,10 @@ from app.models import (
 # the model fills the quota with reasoning and returns truncated/empty content.
 _REASONING_HEADROOM = 1024
 
+# Prefix for OpenAI Responses reasoning.encrypted_content stored in Anthropic
+# thinking.signature. Distinguishes our payload from Claude's native signatures.
+_OA_RS_SIG_PREFIX = "oa_rs:"
+
 
 def _apply_reasoning_headroom(max_tok: int | None) -> int | None:
     """Bump small max_tokens so thinking models can still emit visible text."""
@@ -22,6 +26,49 @@ def _apply_reasoning_headroom(max_tok: int | None) -> int | None:
     if max_tok < _REASONING_HEADROOM:
         return max_tok + _REASONING_HEADROOM
     return max_tok
+
+
+def encode_openai_reasoning_signature(rs_id: str, encrypted_content: str) -> str:
+    """Pack Responses reasoning id + encrypted_content into a thinking signature.
+
+    Args:
+        rs_id: str - OpenAI reasoning item id (e.g. 'rs_...').
+        encrypted_content: str - Opaque encrypted reasoning state from OpenAI.
+
+    Returns:
+        str - Signature string safe to round-trip via Anthropic thinking blocks.
+    """
+    payload = _json.dumps(
+        {"id": rs_id or "", "ec": encrypted_content or ""},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return f"{_OA_RS_SIG_PREFIX}{payload}"
+
+
+def decode_openai_reasoning_signature(signature: str) -> dict[str, str] | None:
+    """Unpack an OpenAI reasoning signature from an Anthropic thinking block.
+
+    Args:
+        signature: str - Value of thinking.signature from the client history.
+
+    Returns:
+        dict[str, str] | None - {"id", "ec"} if this is our encoded payload, else None.
+    """
+    if not signature or not isinstance(signature, str):
+        return None
+    if not signature.startswith(_OA_RS_SIG_PREFIX):
+        return None
+    try:
+        data = _json.loads(signature[len(_OA_RS_SIG_PREFIX):])
+    except (_json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ec = data.get("ec") or ""
+    if not ec:
+        return None
+    return {"id": str(data.get("id") or ""), "ec": str(ec)}
 
 
 def _toolu_to_fc(tool_id: str) -> str:
@@ -531,7 +578,11 @@ def _append_responses_user_item(
 
 
 def _append_responses_assistant_item(items: list[dict[str, Any]], content: Any) -> None:
-    """Append an assistant output item for the Responses API.
+    """Append assistant output items for the Responses API.
+
+    Preserves block order so reasoning items stay immediately before the
+    function_call / message items they belong with. OpenAI requires this
+    ordering when replaying encrypted_content.
 
     Args:
         items: list[dict[str, Any]] - Items list to append to.
@@ -553,8 +604,17 @@ def _append_responses_assistant_item(items: list[dict[str, Any]], content: Any) 
         })
         return
 
-    text_parts: list[dict[str, Any]] = []
-    function_calls: list[dict[str, Any]] = []
+    pending_text: list[dict[str, Any]] = []
+
+    def _flush_text() -> None:
+        if not pending_text:
+            return
+        items.append({
+            "type": "message",
+            "role": "assistant",
+            "content": list(pending_text),
+        })
+        pending_text.clear()
 
     for block in content:
         if isinstance(block, dict):
@@ -564,14 +624,32 @@ def _append_responses_assistant_item(items: list[dict[str, Any]], content: Any) 
             block = block.model_dump() if hasattr(block, "model_dump") else dict(block)
 
         if block_type == "thinking":
-            pass
+            payload = decode_openai_reasoning_signature(block.get("signature", ""))
+            if payload:
+                _flush_text()
+                reasoning_item: dict[str, Any] = {
+                    "type": "reasoning",
+                    "encrypted_content": payload["ec"],
+                    "summary": [],
+                }
+                if payload["id"]:
+                    reasoning_item["id"] = payload["id"]
+                thinking_text = block.get("thinking", "")
+                if thinking_text:
+                    reasoning_item["summary"] = [
+                        {"type": "summary_text", "text": thinking_text},
+                    ]
+                items.append(reasoning_item)
 
         elif block_type == "text":
-            text_parts.append({"type": "output_text", "text": block.get("text", "")})
+            text = block.get("text", "")
+            if text:
+                pending_text.append({"type": "output_text", "text": text})
 
         elif block_type == "tool_use":
+            _flush_text()
             fc_id = _toolu_to_fc(block.get("id", ""))
-            function_calls.append({
+            items.append({
                 "type": "function_call",
                 "id": fc_id,
                 "call_id": fc_id,
@@ -579,15 +657,7 @@ def _append_responses_assistant_item(items: list[dict[str, Any]], content: Any) 
                 "arguments": _json.dumps(block.get("input", {})),
             })
 
-    if text_parts:
-        items.append({
-            "type": "message",
-            "role": "assistant",
-            "content": text_parts,
-        })
-
-    for fc in function_calls:
-        items.append(fc)
+    _flush_text()
 
 
 def to_openai_chat_request(
@@ -687,6 +757,10 @@ def to_openai_responses_request(
         "model": model_id,
         "input": _build_responses_input(request, inject_context=inject_context, image_mode=image_mode, image_dir=image_dir),
         "stream": request.stream,
+        # Stateless proxy: do not rely on OpenAI server-side store; round-trip
+        # reasoning.encrypted_content via Anthropic thinking.signature instead.
+        "store": False,
+        "include": ["reasoning.encrypted_content"],
     }
 
     if not upstream_system:

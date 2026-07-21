@@ -4,6 +4,8 @@ import time
 import uuid
 from typing import Any, AsyncIterator, Optional
 
+from app.converters.anthropic_to_openai import encode_openai_reasoning_signature
+
 debug_logger = logging.getLogger("anyclaude.debug")
 
 
@@ -177,11 +179,20 @@ def from_openai_responses_response(
             for sp in summary_parts:
                 if sp.get("type") == "summary_text":
                     thinking_text += sp.get("text", "")
-            if thinking_text:
-                content_blocks.append({
+            encrypted = item.get("encrypted_content") or ""
+            # Keep the block even when summary is empty so encrypted_content
+            # can still round-trip for multi-turn reasoning continuity.
+            if thinking_text or encrypted:
+                block: dict[str, Any] = {
                     "type": "thinking",
                     "thinking": thinking_text,
-                })
+                }
+                if encrypted:
+                    block["signature"] = encode_openai_reasoning_signature(
+                        item.get("id") or "",
+                        encrypted,
+                    )
+                content_blocks.append(block)
 
         elif item_type == "message" and item.get("role") == "assistant":
             for part in item.get("content", []):
@@ -345,6 +356,23 @@ def _build_thinking_delta_event(index: int, thinking: str) -> str:
         "type": "content_block_delta",
         "index": index,
         "delta": {"type": "thinking_delta", "thinking": thinking},
+    })
+
+
+def _build_signature_delta_event(index: int, signature: str) -> str:
+    """Build the Anthropic content_block_delta SSE event for thinking signature.
+
+    Args:
+        index: int - Content block index.
+        signature: str - Encoded thinking signature payload.
+
+    Returns:
+        str - Formatted content_block_delta SSE event.
+    """
+    return _sse_event("content_block_delta", {
+        "type": "content_block_delta",
+        "index": index,
+        "delta": {"type": "signature_delta", "signature": signature},
     })
 
 
@@ -787,11 +815,31 @@ async def stream_openai_responses_to_anthropic(
                 item_id = item.get("id", "")
                 debug_logger.info("  [RESPONSES] output_item.done type=%s id=%s", item_type, item_id)
 
-                if item_type == "reasoning" and thinking_block_started:
-                    debug_logger.info("  -> EMIT content_block_stop(thinking, idx=%d)", content_index)
-                    yield _build_content_block_stop_event(content_index)
-                    content_index += 1
-                    thinking_block_started = False
+                if item_type == "reasoning":
+                    encrypted = item.get("encrypted_content") or ""
+                    signature = (
+                        encode_openai_reasoning_signature(item_id, encrypted)
+                        if encrypted
+                        else ""
+                    )
+
+                    if not thinking_block_started and signature:
+                        # Low-effort turns may carry encrypted_content with no
+                        # summary text; still emit a thinking block so the
+                        # signature round-trips through client history.
+                        debug_logger.info("  -> EMIT content_block_start(thinking, idx=%d) [signature only]", content_index)
+                        yield _build_content_block_start_event(content_index, "thinking")
+                        thinking_block_started = True
+                        started = True
+
+                    if thinking_block_started:
+                        if signature:
+                            debug_logger.info("  -> EMIT signature_delta(thinking, idx=%d)", content_index)
+                            yield _build_signature_delta_event(content_index, signature)
+                        debug_logger.info("  -> EMIT content_block_stop(thinking, idx=%d)", content_index)
+                        yield _build_content_block_stop_event(content_index)
+                        content_index += 1
+                        thinking_block_started = False
 
                 if item_type in tool_mapping and item_id not in tool_blocks:
                     mapped_name = tool_mapping[item_type]

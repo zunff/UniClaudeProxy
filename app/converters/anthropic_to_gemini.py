@@ -1,8 +1,9 @@
-import json as _json
 from typing import Any
-from urllib.parse import unquote
 
-from app.converters.gemini_to_anthropic import THOUGHT_SIG_SEP
+from app.converters.gemini_to_anthropic import (
+    decode_gemini_part_signature,
+    decode_gemini_tool_id,
+)
 from app.models import AnthropicRequest
 from app.utils.images import detect_media_type
 
@@ -42,23 +43,13 @@ def _extract_system_prompt(request: AnthropicRequest) -> str | None:
     return None
 
 
-_STRIP_SCHEMA_KEYS = frozenset({
-    "$schema", "$id", "$ref", "$comment", "$defs",
-    "additionalProperties", "propertyNames", "patternProperties",
-    "definitions", "examples", "default", "const",
-    "if", "then", "else", "not",
-    "anyOf", "any_of", "oneOf", "one_of", "allOf", "all_of",
-    "minProperties", "maxProperties",
-    "minItems", "maxItems", "uniqueItems",
-    "minLength", "maxLength", "pattern",
-    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
-    "multipleOf", "contentMediaType", "contentEncoding",
-    "title",
-})
-
-_GEMINI_ALLOWED_KEYS = frozenset({
-    "type", "description", "properties", "required",
-    "items", "enum", "format", "nullable",
+_GEMINI_JSON_SCHEMA_KEYS = frozenset({
+    "$id", "$defs", "$ref", "$anchor",
+    "type", "format", "title", "description", "enum",
+    "items", "prefixItems", "minItems", "maxItems",
+    "minimum", "maximum", "anyOf", "oneOf",
+    "properties", "additionalProperties", "required",
+    "propertyOrdering",
 })
 
 
@@ -76,12 +67,16 @@ def _clean_schema(schema: Any) -> dict[str, Any]:
 
     cleaned: dict[str, Any] = {}
     for key, value in schema.items():
-        if key in _STRIP_SCHEMA_KEYS:
+        if key not in _GEMINI_JSON_SCHEMA_KEYS:
             continue
-        if key not in _GEMINI_ALLOWED_KEYS:
-            continue
-        if key == "properties" and isinstance(value, dict):
+        if key in ("properties", "$defs") and isinstance(value, dict):
             cleaned[key] = {k: _clean_schema(v) for k, v in value.items()}
+        elif key == "oneOf" and isinstance(value, list):
+            # Gemini interprets oneOf with the same semantics as anyOf.
+            cleaned["anyOf"] = [
+                _clean_schema(item) if isinstance(item, dict) else item
+                for item in value
+            ]
         elif isinstance(value, dict):
             cleaned[key] = _clean_schema(value)
         elif isinstance(value, list):
@@ -130,7 +125,9 @@ def _convert_tools(tools: list[Any]) -> list[dict[str, Any]]:
         declarations.append({
             "name": name,
             "description": description,
-            "parameters": schema,
+            # parametersJsonSchema accepts the documented JSON Schema subset
+            # and preserves refs, unions, ranges and additionalProperties.
+            "parametersJsonSchema": schema,
         })
 
     if not declarations:
@@ -139,26 +136,22 @@ def _convert_tools(tools: list[Any]) -> list[dict[str, Any]]:
     return [{"functionDeclarations": declarations}]
 
 
-def _build_user_parts(content: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build Gemini parts from Anthropic user message content.
-
-    Returns a tuple of (user_parts, tool_response_messages) since Gemini
-    requires tool responses as separate messages with role "user".
+def _build_user_parts(content: Any) -> list[dict[str, Any]]:
+    """Build ordered Gemini parts from Anthropic user message content.
 
     Args:
         content: Any - String or list of Anthropic content blocks.
 
     Returns:
-        tuple[list[dict[str, Any]], list[dict[str, Any]]] - (regular parts, tool response messages).
+        list[dict[str, Any]] - Gemini user parts in their original order.
     """
     if isinstance(content, str):
-        return [{"text": content}], []
+        return [{"text": content}]
 
     if not isinstance(content, list):
-        return [{"text": str(content)}], []
+        return [{"text": str(content)}]
 
     parts: list[dict[str, Any]] = []
-    tool_responses: list[dict[str, Any]] = []
 
     for block in content:
         if isinstance(block, dict):
@@ -201,17 +194,19 @@ def _build_user_parts(content: Any) -> tuple[list[dict[str, Any]], list[dict[str
             else:
                 result_text = str(tool_content)
 
-            tool_responses.append({
-                "role": "user",
-                "parts": [{
-                    "functionResponse": {
-                        "name": tool_name,
-                        "response": {"result": result_text},
-                    }
-                }],
+            response_payload = (
+                {"error": result_text}
+                if block.get("is_error", False)
+                else {"result": result_text}
+            )
+            parts.append({
+                "functionResponse": {
+                    "name": tool_name,
+                    "response": response_payload,
+                }
             })
 
-    return parts, tool_responses
+    return parts
 
 
 def _build_assistant_parts(content: Any) -> list[dict[str, Any]]:
@@ -255,9 +250,16 @@ def _build_assistant_parts(content: Any) -> list[dict[str, Any]]:
                 }
             }
 
-            if THOUGHT_SIG_SEP in raw_id:
-                _, encoded_sig = raw_id.split(THOUGHT_SIG_SEP, 1)
-                part["thoughtSignature"] = unquote(encoded_sig)
+            metadata = decode_gemini_tool_id(raw_id)
+            if metadata is not None:
+                gemini_call_id = metadata.get("id", "")
+                if gemini_call_id:
+                    part["functionCall"]["id"] = gemini_call_id
+                # A None signature explicitly means a Gemini-origin parallel
+                # call that did not carry a signature; preserve that absence.
+                sig = metadata.get("thoughtSignature")
+                if sig:
+                    part["thoughtSignature"] = sig
             else:
                 # Required for Gemini 3 when history includes tool calls from
                 # non-Gemini providers or clients that don't preserve signatures.
@@ -266,7 +268,21 @@ def _build_assistant_parts(content: Any) -> list[dict[str, Any]]:
             parts.append(part)
 
         elif block_type == "thinking":
-            pass
+            sig = decode_gemini_part_signature(block.get("signature", ""))
+            if sig:
+                thinking_text = block.get("thinking", "")
+                if thinking_text:
+                    parts.append({
+                        "text": thinking_text,
+                        "thought": True,
+                        "thoughtSignature": sig,
+                    })
+                elif parts:
+                    # Signature-only marker emitted after a normal text part.
+                    parts[-1]["thoughtSignature"] = sig
+                else:
+                    # Preserve an otherwise standalone signed empty part.
+                    parts.append({"text": "", "thoughtSignature": sig})
 
     return parts
 
@@ -281,7 +297,7 @@ def _build_contents(request: AnthropicRequest) -> list[dict[str, Any]]:
         list[dict[str, Any]] - Gemini contents array.
     """
     contents: list[dict[str, Any]] = []
-    tool_id_to_name: dict[str, str] = {}
+    tool_id_to_call: dict[str, dict[str, str]] = {}
 
     for msg in request.messages:
         msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else dict(msg)
@@ -294,27 +310,27 @@ def _build_contents(request: AnthropicRequest) -> list[dict[str, Any]]:
                     b = block if isinstance(block, dict) else (block.model_dump() if hasattr(block, "model_dump") else dict(block))
                     if b.get("type") == "tool_use":
                         raw_id = b.get("id", "")
-                        tool_id_to_name[raw_id] = b.get("name", "")
+                        metadata = decode_gemini_tool_id(raw_id) or {}
+                        tool_id_to_call[raw_id] = {
+                            "name": b.get("name", ""),
+                            "id": str(metadata.get("id") or ""),
+                        }
 
             parts = _build_assistant_parts(content)
             if parts:
                 contents.append({"role": "model", "parts": parts})
 
         elif role == "user":
-            user_parts, tool_responses = _build_user_parts(content)
-
-            if tool_responses:
-                merged_parts: list[dict[str, Any]] = []
-                for tr in tool_responses:
-                    for part in tr["parts"]:
-                        if "functionResponse" in part:
-                            fr = part["functionResponse"]
-                            raw_tool_use_id = fr["name"]
-                            if raw_tool_use_id in tool_id_to_name:
-                                fr["name"] = tool_id_to_name[raw_tool_use_id]
-                        merged_parts.append(part)
-                contents.append({"role": "user", "parts": merged_parts})
-
+            user_parts = _build_user_parts(content)
+            for part in user_parts:
+                if "functionResponse" in part:
+                    fr = part["functionResponse"]
+                    raw_tool_use_id = fr["name"]
+                    if raw_tool_use_id in tool_id_to_call:
+                        call = tool_id_to_call[raw_tool_use_id]
+                        fr["name"] = call["name"]
+                        if call["id"]:
+                            fr["id"] = call["id"]
             if user_parts:
                 contents.append({"role": "user", "parts": user_parts})
 
@@ -354,6 +370,8 @@ def to_gemini_request(
         gen_config["temperature"] = request.temperature
     if request.top_p is not None:
         gen_config["topP"] = request.top_p
+    if request.top_k is not None:
+        gen_config["topK"] = request.top_k
     if request.stop_sequences:
         gen_config["stopSequences"] = request.stop_sequences
 
@@ -364,5 +382,20 @@ def to_gemini_request(
         gemini_tools = _convert_tools(request.tools)
         if gemini_tools:
             body["tools"] = gemini_tools
+            if request.tool_choice:
+                choice_type = request.tool_choice.get("type", "auto")
+                function_config: dict[str, Any] = {"mode": "AUTO"}
+                if choice_type == "any":
+                    function_config["mode"] = "ANY"
+                elif choice_type == "none":
+                    function_config["mode"] = "NONE"
+                elif choice_type == "tool":
+                    function_config["mode"] = "ANY"
+                    name = request.tool_choice.get("name", "")
+                    if name:
+                        function_config["allowedFunctionNames"] = [name]
+                body["toolConfig"] = {
+                    "functionCallingConfig": function_config,
+                }
 
     return body

@@ -9,8 +9,75 @@ from urllib.parse import quote, unquote
 debug_logger = logging.getLogger("anyclaude.debug")
 
 THOUGHT_SIG_SEP = "__ts__"
+GEMINI_TOOL_META_SEP = "__gm__"
+GEMINI_PART_SIG_PREFIX = "gemini_part:"
 
 ToolParamIndex = dict[str, list[str]]
+
+
+def encode_gemini_part_signature(thought_signature: str) -> str:
+    """Encode opaque Gemini part metadata into an Anthropic thinking signature."""
+    payload = json.dumps(
+        {"thoughtSignature": thought_signature},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return f"{GEMINI_PART_SIG_PREFIX}{quote(payload, safe='')}"
+
+
+def decode_gemini_part_signature(signature: str) -> str | None:
+    """Decode a Gemini signature previously stored in a thinking block."""
+    if not isinstance(signature, str) or not signature.startswith(GEMINI_PART_SIG_PREFIX):
+        return None
+    try:
+        payload = json.loads(unquote(signature[len(GEMINI_PART_SIG_PREFIX):]))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    value = payload.get("thoughtSignature") if isinstance(payload, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def encode_gemini_tool_id(
+    anthropic_id: str,
+    gemini_call_id: str,
+    thought_signature: str | None,
+) -> str:
+    """Pack Gemini function-call metadata into a stateless Anthropic tool ID."""
+    payload = json.dumps(
+        {
+            "id": gemini_call_id or "",
+            # None means this was a Gemini-origin call with no signature (for
+            # example, a secondary call in a parallel function-call group).
+            "thoughtSignature": thought_signature,
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return f"{anthropic_id}{GEMINI_TOOL_META_SEP}{quote(payload, safe='')}"
+
+
+def decode_gemini_tool_id(tool_id: str) -> dict[str, Any] | None:
+    """Unpack Gemini function-call metadata from an Anthropic tool ID."""
+    if not isinstance(tool_id, str):
+        return None
+    if GEMINI_TOOL_META_SEP in tool_id:
+        _, encoded = tool_id.split(GEMINI_TOOL_META_SEP, 1)
+        try:
+            payload = json.loads(unquote(encoded))
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(payload, dict):
+            return {
+                "id": str(payload.get("id") or ""),
+                "thoughtSignature": payload.get("thoughtSignature"),
+            }
+        return None
+    # Backward compatibility with IDs generated before function-call IDs were
+    # preserved. These only contain a real thought signature.
+    if THOUGHT_SIG_SEP in tool_id:
+        _, encoded_sig = tool_id.split(THOUGHT_SIG_SEP, 1)
+        return {"id": "", "thoughtSignature": unquote(encoded_sig)}
+    return None
 
 
 def build_tool_param_index(tools: list[Any] | None) -> ToolParamIndex:
@@ -175,23 +242,34 @@ def from_gemini_response(
 
         parts = candidate.get("content", {}).get("parts", [])
         for part in parts:
+            sig = part.get("thoughtSignature", "")
             if "text" in part and not part.get("thought"):
                 content.append({
                     "type": "text",
                     "text": part["text"],
                 })
+                if sig:
+                    content.append({
+                        "type": "thinking",
+                        "thinking": "",
+                        "signature": encode_gemini_part_signature(sig),
+                    })
             elif part.get("thought") and "text" in part:
-                content.append({
+                thinking_block = {
                     "type": "thinking",
                     "thinking": part["text"],
-                })
+                }
+                if sig:
+                    thinking_block["signature"] = encode_gemini_part_signature(sig)
+                content.append(thinking_block)
             elif "functionCall" in part:
                 has_tool_use = True
                 fc = part["functionCall"]
-                tool_id = _generate_tool_id()
-                sig = part.get("thoughtSignature", "")
-                if sig:
-                    tool_id = f"{tool_id}{THOUGHT_SIG_SEP}{quote(sig, safe='')}"
+                tool_id = encode_gemini_tool_id(
+                    _generate_tool_id(),
+                    str(fc.get("id") or ""),
+                    sig or None,
+                )
                 fc_name = fc.get("name", "")
                 fc_args = fc.get("args", {})
                 if param_index:
@@ -337,6 +415,15 @@ def _build_thinking_delta_event(index: int, thinking: str) -> str:
     })
 
 
+def _build_signature_delta_event(index: int, signature: str) -> str:
+    """Build an Anthropic signature delta for an opaque Gemini part signature."""
+    return _sse_event("content_block_delta", {
+        "type": "content_block_delta",
+        "index": index,
+        "delta": {"type": "signature_delta", "signature": signature},
+    })
+
+
 def _build_input_json_delta_event(index: int, partial_json: str) -> str:
     """Build the Anthropic content_block_delta SSE event for tool input JSON.
 
@@ -429,6 +516,7 @@ async def stream_gemini_to_anthropic(
     input_tokens = 0
     finish_reason = "STOP"
     has_tool_use = False
+    emitted_part_signatures: set[str] = set()
 
     yield _build_message_start_event(anthropic_model, msg_id)
     yield _build_ping_event()
@@ -478,6 +566,7 @@ async def stream_gemini_to_anthropic(
 
             parts = candidate.get("content", {}).get("parts", [])
             for part in parts:
+                sig = part.get("thoughtSignature", "")
                 if part.get("thought") and "text" in part:
                     if text_block_started:
                         yield _build_content_block_stop_event(text_block_index)
@@ -491,6 +580,12 @@ async def stream_gemini_to_anthropic(
                         started = True
 
                     yield _build_thinking_delta_event(thinking_block_index, part["text"])
+                    if sig and sig not in emitted_part_signatures:
+                        yield _build_signature_delta_event(
+                            thinking_block_index,
+                            encode_gemini_part_signature(sig),
+                        )
+                        emitted_part_signatures.add(sig)
 
                 elif "text" in part and not part.get("thought"):
                     if thinking_block_started:
@@ -504,7 +599,23 @@ async def stream_gemini_to_anthropic(
                         text_block_started = True
                         started = True
 
-                    yield _build_text_delta_event(text_block_index, part["text"])
+                    if part["text"]:
+                        yield _build_text_delta_event(text_block_index, part["text"])
+
+                    if sig and sig not in emitted_part_signatures:
+                        if text_block_started:
+                            yield _build_content_block_stop_event(text_block_index)
+                            text_block_started = False
+                        marker_index = next_index
+                        next_index += 1
+                        yield _build_content_block_start_event(marker_index, "thinking")
+                        yield _build_signature_delta_event(
+                            marker_index,
+                            encode_gemini_part_signature(sig),
+                        )
+                        yield _build_content_block_stop_event(marker_index)
+                        emitted_part_signatures.add(sig)
+                        started = True
 
                 elif "functionCall" in part:
                     has_tool_use = True
@@ -517,10 +628,11 @@ async def stream_gemini_to_anthropic(
                         text_block_started = False
 
                     fc = part["functionCall"]
-                    tool_id = _generate_tool_id()
-                    sig = part.get("thoughtSignature", "")
-                    if sig:
-                        tool_id = f"{tool_id}{THOUGHT_SIG_SEP}{quote(sig, safe='')}"
+                    tool_id = encode_gemini_tool_id(
+                        _generate_tool_id(),
+                        str(fc.get("id") or ""),
+                        sig or None,
+                    )
                     tool_name = fc.get("name", "")
                     tool_args = fc.get("args", {})
                     if param_index:

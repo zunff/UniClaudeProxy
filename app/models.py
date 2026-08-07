@@ -158,6 +158,8 @@ class AnthropicRequest(BaseModel):
         stop_sequences: Optional[list[str]] - Custom stop sequences.
         tools: Optional[list[AnthropicToolDef]] - Available tools.
         tool_choice: Optional[dict[str, Any]] - Tool selection strategy.
+        thinking: Optional[dict[str, Any]] - Anthropic thinking mode/configuration.
+        output_config: Optional[dict[str, Any]] - Output effort configuration.
         metadata: Optional[dict[str, Any]] - Request metadata.
     """
 
@@ -174,6 +176,8 @@ class AnthropicRequest(BaseModel):
     stop_sequences: Optional[list[str]] = None
     tools: Optional[list[AnthropicToolDef]] = None
     tool_choice: Optional[dict[str, Any]] = None
+    thinking: Optional[dict[str, Any]] = None
+    output_config: Optional[dict[str, Any]] = None
     metadata: Optional[dict[str, Any]] = None
 
 

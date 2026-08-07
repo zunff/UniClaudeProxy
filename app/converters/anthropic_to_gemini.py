@@ -337,6 +337,69 @@ def _build_contents(request: AnthropicRequest) -> list[dict[str, Any]]:
     return contents
 
 
+def _gemini_thinking_config(
+    request: AnthropicRequest,
+    model_id: str,
+) -> dict[str, Any] | None:
+    """Translate Anthropic thinking/effort controls to Gemini semantics.
+
+    Anthropic adaptive effort maps directly by level. Legacy token budgets are
+    approximated for Gemini 3 and passed through for Gemini 2.5.
+    """
+    thinking = request.thinking or {}
+    output_config = request.output_config or {}
+    thinking_type = str(thinking.get("type") or "").lower()
+    effort = str(
+        output_config.get("effort")
+        or thinking.get("effort")
+        or ""
+    ).lower()
+    budget = thinking.get("budget_tokens")
+    is_gemini_25 = "gemini-2.5" in model_id.lower()
+
+    if thinking_type == "disabled":
+        if is_gemini_25:
+            return {"thinkingBudget": 0, "includeThoughts": False}
+        # Gemini 3.1 Pro cannot disable thinking and does not support minimal.
+        level = "low" if "pro" in model_id.lower() else "minimal"
+        return {"thinkingLevel": level, "includeThoughts": False}
+
+    enabled = thinking_type in {"enabled", "adaptive"} or bool(effort)
+    if not enabled:
+        return None
+
+    if is_gemini_25:
+        if isinstance(budget, int):
+            return {"thinkingBudget": budget, "includeThoughts": True}
+        # Dynamic thinking is Gemini 2.5's closest match for adaptive effort.
+        return {"thinkingBudget": -1, "includeThoughts": True}
+
+    if effort:
+        level = {
+            "minimal": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "max": "high",
+            "xhigh": "high",
+        }.get(effort)
+        if level:
+            return {"thinkingLevel": level, "includeThoughts": True}
+
+    if isinstance(budget, int):
+        if budget <= 1024:
+            level = "low"
+        elif budget <= 4096:
+            level = "medium"
+        else:
+            level = "high"
+        return {"thinkingLevel": level, "includeThoughts": True}
+
+    # Adaptive thinking with no explicit effort should keep the model's native
+    # default (medium for Gemini 3.5 Flash, high for Gemini 3.1 Pro).
+    return {"includeThoughts": True}
+
+
 def to_gemini_request(
     request: AnthropicRequest,
     model_id: str,
@@ -374,6 +437,9 @@ def to_gemini_request(
         gen_config["topK"] = request.top_k
     if request.stop_sequences:
         gen_config["stopSequences"] = request.stop_sequences
+    thinking_config = _gemini_thinking_config(request, model_id)
+    if thinking_config:
+        gen_config["thinkingConfig"] = thinking_config
 
     if gen_config:
         body["generationConfig"] = gen_config

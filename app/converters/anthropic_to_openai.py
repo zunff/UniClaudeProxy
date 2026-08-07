@@ -722,6 +722,57 @@ def to_openai_chat_request(
     return body
 
 
+def _openai_reasoning_config(
+    request: AnthropicRequest,
+    model_id: str,
+    configured: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Merge configured reasoning with Anthropic adaptive-thinking controls.
+
+    Explicit per-model configuration wins. When it does not specify effort,
+    Claude's output_config.effort (or legacy budget_tokens) is translated to
+    OpenAI Responses reasoning.effort.
+    """
+    result = dict(configured or {})
+    if result.get("effort"):
+        return result
+
+    thinking = request.thinking or {}
+    output_config = request.output_config or {}
+    thinking_type = str(thinking.get("type") or "").lower()
+    effort = str(
+        output_config.get("effort")
+        or thinking.get("effort")
+        or ""
+    ).lower()
+    budget = thinking.get("budget_tokens")
+
+    mapped_effort: str | None = None
+    if thinking_type == "disabled":
+        mapped_effort = "none"
+    elif effort:
+        mapped_effort = {
+            "minimal": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            # OpenAI calls Claude's max tier xhigh on supported frontier models.
+            "max": "xhigh" if "gpt-5.5" in model_id.lower() else "high",
+            "xhigh": "xhigh",
+        }.get(effort)
+    elif thinking_type == "enabled" and isinstance(budget, int):
+        if budget <= 1024:
+            mapped_effort = "low"
+        elif budget <= 4096:
+            mapped_effort = "medium"
+        else:
+            mapped_effort = "high"
+
+    if mapped_effort:
+        result["effort"] = mapped_effort
+    return result or None
+
+
 def to_openai_responses_request(
     request: AnthropicRequest,
     model_id: str,
@@ -768,12 +819,17 @@ def to_openai_responses_request(
         if system_prompt:
             body["instructions"] = system_prompt
 
-    reasoning_effort = (reasoning or {}).get("effort", "none") if reasoning else None
+    effective_reasoning = _openai_reasoning_config(request, model_id, reasoning)
+    reasoning_effort = (
+        effective_reasoning.get("effort", "none")
+        if effective_reasoning
+        else None
+    )
 
     if reasoning_effort and reasoning_effort != "none":
-        body["reasoning"] = reasoning
-    elif reasoning and reasoning_effort == "none":
-        body["reasoning"] = reasoning
+        body["reasoning"] = effective_reasoning
+    elif effective_reasoning and reasoning_effort == "none":
+        body["reasoning"] = effective_reasoning
         if request.temperature is not None:
             body["temperature"] = request.temperature
         if request.top_p is not None:

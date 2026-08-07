@@ -3,6 +3,7 @@ import json
 import unittest
 
 from app.converters.anthropic_to_gemini import to_gemini_request
+from app.converters.anthropic_to_openai import to_openai_responses_request
 from app.converters.gemini_to_anthropic import (
     decode_gemini_part_signature,
     from_gemini_response,
@@ -157,6 +158,56 @@ class GeminiRoundTripTests(unittest.TestCase):
         event_data = json.loads(data_line[6:])
         encoded = event_data["delta"]["signature"]
         self.assertEqual(decode_gemini_part_signature(encoded), "stream-text-sig")
+
+    def test_maps_adaptive_thinking_effort_to_gemini(self):
+        request = AnthropicRequest(
+            model="claude-sonnet-5",
+            messages=[{"role": "user", "content": "test"}],
+            thinking={"type": "adaptive"},
+            output_config={"effort": "high"},
+        )
+        body = to_gemini_request(request, "gemini-3.5-flash")
+        self.assertEqual(
+            body["generationConfig"]["thinkingConfig"],
+            {"thinkingLevel": "high", "includeThoughts": True},
+        )
+
+    def test_maps_disabled_thinking_by_gemini_capability(self):
+        request = AnthropicRequest(
+            model="claude-sonnet-5",
+            messages=[{"role": "user", "content": "test"}],
+            thinking={"type": "disabled"},
+        )
+        flash = to_gemini_request(request, "gemini-3.5-flash")
+        pro = to_gemini_request(request, "gemini-3.1-pro-preview")
+        self.assertEqual(
+            flash["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "minimal",
+        )
+        self.assertEqual(
+            pro["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "low",
+        )
+
+    def test_maps_anthropic_effort_to_openai_responses(self):
+        request = AnthropicRequest(
+            model="claude-opus-4-8",
+            messages=[{"role": "user", "content": "test"}],
+            thinking={"type": "adaptive"},
+            output_config={"effort": "max"},
+        )
+        body = to_openai_responses_request(request, "gpt-5.5")
+        self.assertEqual(body["reasoning"], {"effort": "xhigh"})
+
+        configured = to_openai_responses_request(
+            request,
+            "gpt-5.5",
+            reasoning={"effort": "medium", "summary": "auto"},
+        )
+        self.assertEqual(
+            configured["reasoning"],
+            {"effort": "medium", "summary": "auto"},
+        )
 
 
 if __name__ == "__main__":

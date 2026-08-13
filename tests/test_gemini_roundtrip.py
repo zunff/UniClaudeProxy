@@ -257,6 +257,151 @@ class GeminiRoundTripTests(unittest.TestCase):
         self.assertIn("tools", body)
         self.assertNotIn("tool_choice", body)
 
+    def test_promotes_tool_result_images_for_openai_chat(self):
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42"
+            "mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        request = AnthropicRequest(
+            model="claude-opus-5",
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_01ReadImage",
+                        "name": "Read",
+                        "input": {"file_path": "frog.png"},
+                    }],
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01ReadImage",
+                        "content": [
+                            {"type": "text", "text": "frog.png"},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": png_b64,
+                                },
+                            },
+                        ],
+                    }],
+                },
+            ],
+        )
+
+        body = to_openai_chat_request(
+            request,
+            "gpt-5.6-terra",
+            image_mode="input_image",
+        )
+        roles = [msg["role"] for msg in body["messages"]]
+        self.assertEqual(roles[-2:], ["tool", "user"])
+
+        tool_msg = body["messages"][-2]
+        self.assertEqual(tool_msg["content"], "frog.png")
+
+        user_msg = body["messages"][-1]
+        self.assertIsInstance(user_msg["content"], list)
+        image_parts = [
+            part for part in user_msg["content"] if part.get("type") == "image_url"
+        ]
+        self.assertEqual(len(image_parts), 1)
+        self.assertTrue(
+            image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        )
+
+    def test_promotes_tool_result_images_for_openai_responses(self):
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42"
+            "mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        request = AnthropicRequest(
+            model="claude-opus-5",
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_01ReadImage",
+                        "name": "Read",
+                        "input": {"file_path": "frog.png"},
+                    }],
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01ReadImage",
+                        "content": [{
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": png_b64,
+                            },
+                        }],
+                    }],
+                },
+            ],
+        )
+
+        body = to_openai_responses_request(
+            request,
+            "gpt-5.6-terra",
+            image_mode="input_image",
+        )
+        items = body["input"]
+        self.assertEqual(items[-2]["type"], "function_call_output")
+        self.assertEqual(items[-2]["output"], "")
+        self.assertEqual(items[-1]["type"], "message")
+        self.assertEqual(items[-1]["role"], "user")
+        image_parts = [
+            part for part in items[-1]["content"] if part.get("type") == "input_image"
+        ]
+        self.assertEqual(len(image_parts), 1)
+        self.assertTrue(
+            image_parts[0]["image_url"].startswith("data:image/png;base64,")
+        )
+
+    def test_strips_tool_result_images_when_image_mode_strip(self):
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42"
+            "mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        request = AnthropicRequest(
+            model="claude-opus-5",
+            messages=[{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_01ReadImage",
+                    "content": [{
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": png_b64,
+                        },
+                    }],
+                }],
+            }],
+        )
+
+        body = to_openai_chat_request(
+            request,
+            "deepseek-v4-flash",
+            image_mode="strip",
+        )
+        self.assertEqual(len(body["messages"]), 1)
+        self.assertEqual(body["messages"][0]["role"], "tool")
+        self.assertIn("image support is disabled", body["messages"][0]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

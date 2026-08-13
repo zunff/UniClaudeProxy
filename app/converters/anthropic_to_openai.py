@@ -132,6 +132,11 @@ def _extract_system_prompt(request: AnthropicRequest) -> Optional[str]:
     return None
 
 
+_STRIPPED_IMAGE_NOTE = (
+    "[Image was attached but image support is disabled for this model]"
+)
+
+
 def _convert_content_to_openai_messages(
     content: Any,
     image_mode: str = "input_image",
@@ -166,7 +171,7 @@ def _convert_content_to_openai_messages(
             if image_mode == "strip":
                 parts.append({
                     "type": "text",
-                    "text": "[Image was attached but image support is disabled for this model]",
+                    "text": _STRIPPED_IMAGE_NOTE,
                 })
                 continue
             source = block.get("source", {})
@@ -195,17 +200,16 @@ def _convert_content_to_openai_messages(
             pass
 
         elif block_type == "tool_result":
-            tool_content = block.get("content", "")
-            if isinstance(tool_content, str):
-                result_text = tool_content
-            elif isinstance(tool_content, list):
-                result_text = " ".join(
-                    b.get("text", "") for b in tool_content if isinstance(b, dict) and b.get("type") == "text"
+            result_text, images = _tool_result_text_and_images(
+                block.get("content", ""),
+                image_mode=image_mode,
+            )
+            if result_text:
+                parts.append({"type": "text", "text": result_text})
+            if images:
+                parts.extend(
+                    _convert_content_to_openai_messages(images, image_mode=image_mode)
                 )
-            else:
-                result_text = str(tool_content)
-            parts.append({"type": "text", "text": result_text})
-
         elif block_type == "thinking":
             pass
 
@@ -337,25 +341,45 @@ def _build_chat_messages(
     return messages
 
 
-def _tool_result_text(tool_content: Any, image_mode: str = "input_image") -> str:
-    """Flatten tool_result content to text, optionally noting stripped images."""
-    if isinstance(tool_content, str):
-        return tool_content
-    if not isinstance(tool_content, list):
-        return str(tool_content)
+def _partition_tool_result_content(
+    tool_content: Any,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Split tool_result content into text and Anthropic image blocks.
 
-    parts: list[str] = []
-    has_image = False
+    Claude Code Read returns images inside tool_result.content. OpenAI tool /
+    function_call_output payloads are text-only, so callers must promote the
+    returned image blocks into a follow-up multimodal user message.
+    """
+    if isinstance(tool_content, str):
+        return tool_content, []
+    if not isinstance(tool_content, list):
+        return str(tool_content), []
+
+    text_parts: list[str] = []
+    images: list[dict[str, Any]] = []
     for block in tool_content:
         if not isinstance(block, dict):
             continue
-        if block.get("type") == "text":
-            parts.append(block.get("text", ""))
-        elif block.get("type") == "image":
-            has_image = True
-    if has_image and image_mode == "strip":
-        parts.append("[Image was attached but image support is disabled for this model]")
-    return " ".join(parts)
+        block_type = block.get("type", "")
+        if block_type == "text":
+            text_parts.append(block.get("text", ""))
+        elif block_type == "image":
+            images.append(block)
+    return " ".join(text_parts), images
+
+
+def _tool_result_text_and_images(
+    tool_content: Any,
+    image_mode: str = "input_image",
+) -> tuple[str, list[dict[str, Any]]]:
+    """Return tool text plus image blocks to promote, honoring image_mode."""
+    text, images = _partition_tool_result_content(tool_content)
+    if not images:
+        return text, []
+    if image_mode == "strip":
+        note = _STRIPPED_IMAGE_NOTE
+        return (f"{text} {note}".strip() if text else note), []
+    return text, images
 
 
 def _append_user_message(
@@ -393,12 +417,25 @@ def _append_user_message(
         else:
             other_parts.append(block)
 
+    promoted_images: list[dict[str, Any]] = []
     for tr in tool_results:
+        text, images = _tool_result_text_and_images(
+            tr.get("content", ""),
+            image_mode=image_mode,
+        )
         messages.append({
             "role": "tool",
             "tool_call_id": tr.get("tool_use_id", ""),
-            "content": _tool_result_text(tr.get("content", ""), image_mode=image_mode),
+            "content": text,
         })
+        promoted_images.extend(images)
+
+    if promoted_images:
+        converted = _convert_content_to_openai_messages(
+            promoted_images,
+            image_mode=image_mode,
+        )
+        messages.append({"role": "user", "content": converted})
 
     if other_parts:
         converted = _convert_content_to_openai_messages(other_parts, image_mode=image_mode)
@@ -597,21 +634,23 @@ def _append_responses_user_item(
             parts.extend(build_image_parts(source, image_mode, image_dir))
 
         elif block_type == "tool_result":
-            tool_content = block.get("content", "")
-            if isinstance(tool_content, str):
-                result_text = tool_content
-            elif isinstance(tool_content, list):
-                result_text = " ".join(
-                    b.get("text", "") for b in tool_content if isinstance(b, dict) and b.get("type") == "text"
-                )
-            else:
-                result_text = str(tool_content)
-
+            result_text, images = _tool_result_text_and_images(
+                block.get("content", ""),
+                image_mode=image_mode,
+            )
             function_results.append({
                 "type": "function_call_output",
                 "call_id": _toolu_to_fc(block.get("tool_use_id", "")),
                 "output": result_text,
             })
+            for image in images:
+                parts.extend(
+                    build_image_parts(
+                        image.get("source", {}),
+                        image_mode,
+                        image_dir,
+                    )
+                )
 
     for fr in function_results:
         items.append(fr)

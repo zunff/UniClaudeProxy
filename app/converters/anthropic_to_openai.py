@@ -227,6 +227,20 @@ ANTHROPIC_BUILTIN_TOOL_TYPES = {
 }
 
 
+def _normalize_function_parameters(schema: Any) -> dict[str, Any]:
+    """Return a function-parameter schema accepted by strict OpenAI providers.
+
+    Claude Code can send built-in tools whose root ``type`` is null. OpenAI
+    compatible providers require every function's parameters to be a JSON
+    Schema object rooted at ``type: object``.
+    """
+    normalized = dict(schema) if isinstance(schema, dict) else {}
+    if normalized.get("type") != "object":
+        normalized["type"] = "object"
+    normalized.setdefault("properties", {})
+    return normalized
+
+
 def _convert_tools_to_openai_chat(tools: list[AnthropicToolDef]) -> list[dict[str, Any]]:
     """Convert Anthropic tool definitions to OpenAI Chat Completions function format.
 
@@ -249,7 +263,9 @@ def _convert_tools_to_openai_chat(tools: list[AnthropicToolDef]) -> list[dict[st
             "function": {
                 "name": tool_dict.get("name", ""),
                 "description": tool_dict.get("description", ""),
-                "parameters": tool_dict.get("input_schema", {}),
+                "parameters": _normalize_function_parameters(
+                    tool_dict.get("input_schema")
+                ),
             },
         })
     return openai_tools
@@ -276,7 +292,9 @@ def _convert_tools_to_openai_responses(tools: list[AnthropicToolDef]) -> list[di
             "type": "function",
             "name": tool_dict.get("name", ""),
             "description": tool_dict.get("description", ""),
-            "parameters": tool_dict.get("input_schema", {}),
+            "parameters": _normalize_function_parameters(
+                tool_dict.get("input_schema")
+            ),
         })
     return openai_tools
 
@@ -695,6 +713,7 @@ def to_openai_chat_request(
     max_output_tokens: int | None = None,
     include_reasoning_content: bool = False,
     image_mode: str = "input_image",
+    omit_tool_choice: bool = False,
 ) -> dict[str, Any]:
     """Convert an Anthropic request to an OpenAI Chat Completions request body.
 
@@ -704,6 +723,7 @@ def to_openai_chat_request(
         max_output_tokens: int | None - Optional cap on max_tokens for providers with limits.
         include_reasoning_content: bool - Whether to forward reasoning/thinking blocks.
         image_mode: str - How to handle images: "input_image", "save_and_ref", or "strip".
+        omit_tool_choice: Whether to omit tool_choice for incompatible upstreams.
 
     Returns:
         dict[str, Any] - OpenAI Chat Completions compatible request body.
@@ -735,7 +755,7 @@ def to_openai_chat_request(
         openai_tools = _convert_tools_to_openai_chat(request.tools)
         if openai_tools:
             body["tools"] = openai_tools
-            if request.tool_choice:
+            if request.tool_choice and not omit_tool_choice:
                 tc_type = request.tool_choice.get("type", "auto")
                 if tc_type == "any":
                     body["tool_choice"] = "required"

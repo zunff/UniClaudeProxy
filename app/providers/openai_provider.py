@@ -147,6 +147,7 @@ def _build_request_body(request: AnthropicRequest, route: ResolvedRoute) -> dict
             max_output_tokens=route.max_output_tokens,
             include_reasoning_content=_should_include_reasoning_content(route),
             image_mode=route.image_mode,
+            omit_tool_choice=route.omit_tool_choice,
         )
     
     # Add extra_body parameters

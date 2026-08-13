@@ -27,6 +27,7 @@ class ModelConfig(BaseModel):
         image_dir: str | None - Directory to save images when using save_and_ref mode.
         system_replacements: dict[str, str] - String replacements applied to system prompt (key=target, value=replacement).
         extra_body: dict[str, Any] - Extra parameters to include in the request body.
+        omit_tool_choice: bool - Omit tool_choice for upstreams that reject it.
     """
 
     name: str
@@ -46,6 +47,7 @@ class ModelConfig(BaseModel):
     image_dir: Optional[str] = None
     system_replacements: dict[str, str] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
+    omit_tool_choice: bool = False
 
 
 class ProviderConfig(BaseModel):
@@ -181,6 +183,7 @@ class ResolvedRoute:
         self.image_mode = model_config.image_mode
         self.image_dir = model_config.image_dir
         self.extra_body = model_config.extra_body
+        self.omit_tool_choice = model_config.omit_tool_choice
         self.upstream_config = upstream_config
 
         base = provider.base_url.rstrip("/")

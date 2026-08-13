@@ -3,7 +3,10 @@ import json
 import unittest
 
 from app.converters.anthropic_to_gemini import to_gemini_request
-from app.converters.anthropic_to_openai import to_openai_responses_request
+from app.converters.anthropic_to_openai import (
+    to_openai_chat_request,
+    to_openai_responses_request,
+)
 from app.converters.gemini_to_anthropic import (
     decode_gemini_part_signature,
     from_gemini_response,
@@ -208,6 +211,51 @@ class GeminiRoundTripTests(unittest.TestCase):
             configured["reasoning"],
             {"effort": "medium", "summary": "auto"},
         )
+
+    def test_normalizes_invalid_openai_function_parameter_schema(self):
+        request = AnthropicRequest(
+            model="claude-sonnet-5",
+            messages=[{"role": "user", "content": "test"}],
+            tools=[{
+                "name": "web_search",
+                "description": "Search the web",
+                "input_schema": {
+                    "type": None,
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            }],
+        )
+
+        chat_body = to_openai_chat_request(request, "deepseek-v4-flash")
+        chat_schema = chat_body["tools"][0]["function"]["parameters"]
+        self.assertEqual(chat_schema["type"], "object")
+        self.assertEqual(chat_schema["properties"]["query"]["type"], "string")
+
+        responses_body = to_openai_responses_request(request, "gpt-5.6-sol")
+        responses_schema = responses_body["tools"][0]["parameters"]
+        self.assertEqual(responses_schema["type"], "object")
+        self.assertEqual(responses_schema["required"], ["query"])
+
+    def test_omits_tool_choice_for_deepseek_thinking_mode(self):
+        request = AnthropicRequest(
+            model="claude-sonnet-5",
+            messages=[{"role": "user", "content": "test"}],
+            tools=[{
+                "name": "lookup",
+                "description": "Lookup a value",
+                "input_schema": {"type": "object"},
+            }],
+            tool_choice={"type": "tool", "name": "lookup"},
+        )
+
+        body = to_openai_chat_request(
+            request,
+            "deepseek-v4-flash",
+            omit_tool_choice=True,
+        )
+        self.assertIn("tools", body)
+        self.assertNotIn("tool_choice", body)
 
 
 if __name__ == "__main__":

@@ -112,6 +112,7 @@ class UpstreamRetryConfig(BaseModel):
 class UpstreamConfig(BaseModel):
     """Global upstream timeout and retry configuration."""
 
+    enabled: bool = True
     stream: UpstreamStreamTimeoutConfig = Field(default_factory=UpstreamStreamTimeoutConfig)
     non_stream: UpstreamNonStreamTimeoutConfig = Field(default_factory=UpstreamNonStreamTimeoutConfig)
     retry: UpstreamRetryConfig = Field(default_factory=UpstreamRetryConfig)

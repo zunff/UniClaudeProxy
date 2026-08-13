@@ -132,11 +132,15 @@ def _extract_system_prompt(request: AnthropicRequest) -> Optional[str]:
     return None
 
 
-def _convert_content_to_openai_messages(content: Any) -> list[dict[str, Any]]:
+def _convert_content_to_openai_messages(
+    content: Any,
+    image_mode: str = "input_image",
+) -> list[dict[str, Any]]:
     """Convert Anthropic content blocks to OpenAI message content parts.
 
     Args:
         content: Any - String or list of Anthropic content blocks.
+        image_mode: str - How to handle images: "input_image", "save_and_ref", or "strip".
 
     Returns:
         list[dict[str, Any]] - OpenAI-compatible content parts.
@@ -159,6 +163,12 @@ def _convert_content_to_openai_messages(content: Any) -> list[dict[str, Any]]:
             parts.append({"type": "text", "text": block.get("text", "")})
 
         elif block_type == "image":
+            if image_mode == "strip":
+                parts.append({
+                    "type": "text",
+                    "text": "[Image was attached but image support is disabled for this model]",
+                })
+                continue
             source = block.get("source", {})
             if source.get("type") == "base64":
                 from app.utils.images import detect_media_type
@@ -274,11 +284,14 @@ def _convert_tools_to_openai_responses(tools: list[AnthropicToolDef]) -> list[di
 def _build_chat_messages(
     request: AnthropicRequest,
     include_reasoning_content: bool = False,
+    image_mode: str = "input_image",
 ) -> list[dict[str, Any]]:
     """Build OpenAI Chat Completions messages array from an Anthropic request.
 
     Args:
         request: AnthropicRequest - The incoming Anthropic-formatted request.
+        include_reasoning_content: bool - Whether to forward reasoning/thinking blocks.
+        image_mode: str - How to handle images: "input_image", "save_and_ref", or "strip".
 
     Returns:
         list[dict[str, Any]] - OpenAI-compatible messages array.
@@ -295,7 +308,7 @@ def _build_chat_messages(
         content = msg_dict.get("content", "")
 
         if role == "user":
-            _append_user_message(messages, content)
+            _append_user_message(messages, content, image_mode=image_mode)
         elif role == "assistant":
             _append_assistant_message(
                 messages,
@@ -306,12 +319,38 @@ def _build_chat_messages(
     return messages
 
 
-def _append_user_message(messages: list[dict[str, Any]], content: Any) -> None:
+def _tool_result_text(tool_content: Any, image_mode: str = "input_image") -> str:
+    """Flatten tool_result content to text, optionally noting stripped images."""
+    if isinstance(tool_content, str):
+        return tool_content
+    if not isinstance(tool_content, list):
+        return str(tool_content)
+
+    parts: list[str] = []
+    has_image = False
+    for block in tool_content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            parts.append(block.get("text", ""))
+        elif block.get("type") == "image":
+            has_image = True
+    if has_image and image_mode == "strip":
+        parts.append("[Image was attached but image support is disabled for this model]")
+    return " ".join(parts)
+
+
+def _append_user_message(
+    messages: list[dict[str, Any]],
+    content: Any,
+    image_mode: str = "input_image",
+) -> None:
     """Append a user message to the messages list, handling tool results.
 
     Args:
         messages: list[dict[str, Any]] - Messages list to append to.
         content: Any - The content of the user message.
+        image_mode: str - How to handle images: "input_image", "save_and_ref", or "strip".
     """
     if isinstance(content, str):
         messages.append({"role": "user", "content": content})
@@ -337,24 +376,14 @@ def _append_user_message(messages: list[dict[str, Any]], content: Any) -> None:
             other_parts.append(block)
 
     for tr in tool_results:
-        tool_content = tr.get("content", "")
-        if isinstance(tool_content, str):
-            result_text = tool_content
-        elif isinstance(tool_content, list):
-            result_text = " ".join(
-                b.get("text", "") for b in tool_content if isinstance(b, dict) and b.get("type") == "text"
-            )
-        else:
-            result_text = str(tool_content)
-
         messages.append({
             "role": "tool",
             "tool_call_id": tr.get("tool_use_id", ""),
-            "content": result_text,
+            "content": _tool_result_text(tr.get("content", ""), image_mode=image_mode),
         })
 
     if other_parts:
-        converted = _convert_content_to_openai_messages(other_parts)
+        converted = _convert_content_to_openai_messages(other_parts, image_mode=image_mode)
         if len(converted) == 1 and converted[0].get("type") == "text":
             messages.append({"role": "user", "content": converted[0]["text"]})
         else:
@@ -665,6 +694,7 @@ def to_openai_chat_request(
     model_id: str,
     max_output_tokens: int | None = None,
     include_reasoning_content: bool = False,
+    image_mode: str = "input_image",
 ) -> dict[str, Any]:
     """Convert an Anthropic request to an OpenAI Chat Completions request body.
 
@@ -672,6 +702,8 @@ def to_openai_chat_request(
         request: AnthropicRequest - The incoming Anthropic-formatted request.
         model_id: str - The OpenAI model identifier.
         max_output_tokens: int | None - Optional cap on max_tokens for providers with limits.
+        include_reasoning_content: bool - Whether to forward reasoning/thinking blocks.
+        image_mode: str - How to handle images: "input_image", "save_and_ref", or "strip".
 
     Returns:
         dict[str, Any] - OpenAI Chat Completions compatible request body.
@@ -686,6 +718,7 @@ def to_openai_chat_request(
         "messages": _build_chat_messages(
             request,
             include_reasoning_content=include_reasoning_content,
+            image_mode=image_mode,
         ),
         "max_tokens": max_tok,
         "stream": request.stream,

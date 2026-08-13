@@ -691,6 +691,22 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.api_route("/api/hello", methods=["GET", "HEAD"])
+async def api_hello() -> dict[str, str]:
+    """Claude Code connectivity probe (ANTHROPIC_BASE_URL/api/hello).
+
+    Claude Code preflight requires HTTP 200; response body is unused.
+    Mirrors the common Anthropic/Bun hello shape.
+    """
+    return {"message": "Hello, world!"}
+
+
+@app.get("/api/hello/{name}")
+async def api_hello_named(name: str) -> dict[str, str]:
+    """Named variant of the Claude Code hello probe."""
+    return {"message": f"Hello, {name}!"}
+
+
 if __name__ == "__main__":
     import uvicorn
 

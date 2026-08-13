@@ -46,6 +46,8 @@ def match_disabled_route(route: ResolvedRoute) -> str | None:
 
 def should_bypass_upstream_policy(route: ResolvedRoute) -> tuple[bool, str | None]:
     """Whether current route should skip first-byte timeout and retry policy."""
+    if not route.upstream_config.enabled:
+        return True, "upstream.enabled=false"
     matched = match_disabled_route(route)
     return matched is not None, matched
 

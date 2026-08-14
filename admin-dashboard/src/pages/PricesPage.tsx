@@ -407,7 +407,7 @@ export default function PricesPage() {
                       <CardTitle className="flex items-center gap-2">
                         <span className="font-mono text-base text-brand-cyan">{name}</span>
                         {routes.length > 0 && (
-                          <span className="text-[11px] px-2 py-0.5 rounded-md border border-brand-green/30 bg-brand-green/10 text-brand-green">
+                          <span className="text-xs px-2 py-0.5 rounded-md border border-brand-green/30 bg-brand-green/10 text-brand-green whitespace-nowrap">
                             绑定 {routes.length} 个路由
                           </span>
                         )}
@@ -455,37 +455,39 @@ export default function PricesPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid grid-cols-3 gap-2 text-center text-[11px] text-slate-400">
-                    <div className="p-2 rounded-md bg-slate-900/40 border border-brand-borderSubtle">
-                      <div className="h-4" />
-                      输入
-                      <br />
-                      缓存命中
-                      <br />
-                      输出
-                    </div>
-                    <div className="p-2 rounded-md bg-brand-amber/5 border border-brand-amber/30 text-brand-amber">
-                      <div className="font-semibold mb-1">高峰</div>
-                      {n.peak.input}
-                      <br />
-                      {n.peak.cached}
-                      <br />
-                      {n.peak.output}
-                    </div>
-                    <div className="p-2 rounded-md bg-brand-cyan/5 border border-brand-cyan/30 text-brand-cyan">
-                      <div className="font-semibold mb-1">闲时</div>
-                      {n.offpeak.input}
-                      <br />
-                      {n.offpeak.cached}
-                      <br />
-                      {n.offpeak.output}
-                    </div>
+                  <div className="overflow-hidden rounded-md border border-brand-borderSubtle text-sm">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="text-slate-400 bg-slate-900/50">
+                          <th className="px-3 py-2.5 text-left font-medium">单价 / 百万 token</th>
+                          <th className="px-3 py-2.5 text-right font-medium text-brand-amber">高峰</th>
+                          <th className="px-3 py-2.5 text-right font-medium text-brand-cyan">闲时</th>
+                        </tr>
+                      </thead>
+                      <tbody className="tabular-nums">
+                        <tr className="border-t border-brand-borderSubtle/60">
+                          <td className="px-3 py-2 text-slate-300">输入</td>
+                          <td className="px-3 py-2 text-right text-brand-amber">{n.peak.input}</td>
+                          <td className="px-3 py-2 text-right text-brand-cyan">{n.offpeak.input}</td>
+                        </tr>
+                        <tr className="border-t border-brand-borderSubtle/60">
+                          <td className="px-3 py-2 text-slate-300">缓存命中</td>
+                          <td className="px-3 py-2 text-right text-brand-amber">{n.peak.cached}</td>
+                          <td className="px-3 py-2 text-right text-brand-cyan">{n.offpeak.cached}</td>
+                        </tr>
+                        <tr className="border-t border-brand-borderSubtle/60">
+                          <td className="px-3 py-2 text-slate-300">输出</td>
+                          <td className="px-3 py-2 text-right text-brand-amber">{n.peak.output}</td>
+                          <td className="px-3 py-2 text-right text-brand-cyan">{n.offpeak.output}</td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
 
                   {/* Bound routes */}
                   <div className="pt-3 border-t border-brand-borderSubtle/60">
                     <div className="flex items-center justify-between mb-2">
-                      <div className="text-[11px] text-slate-500">已绑定路由</div>
+                      <div className="text-sm text-slate-400">已绑定路由</div>
                       <Button
                         variant="ghost"
                         size="sm"

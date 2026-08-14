@@ -466,7 +466,7 @@ export default function MappingsPage() {
                             {r}
                           </span>
                           {weight !== undefined && (
-                            <span className="text-[11px] px-1.5 py-0.5 rounded border border-brand-violet/30 bg-brand-violet/10 text-brand-violet">
+                            <span className="text-xs px-1.5 py-0.5 rounded border border-brand-violet/30 bg-brand-violet/10 text-brand-violet whitespace-nowrap">
                               w:{weight}
                             </span>
                           )}

@@ -478,7 +478,7 @@ function ProviderCard({
         <CardTitle className="flex items-center justify-between gap-2">
           <span className="font-mono text-base text-brand-cyan">{name}</span>
           <div className="flex items-center gap-1">
-            <span className="text-[11px] px-2 py-0.5 rounded-md border border-brand-borderSubtle bg-brand-panel2 text-slate-400">
+            <span className="text-xs px-2 py-0.5 rounded-md border border-brand-borderSubtle bg-brand-panel2 text-slate-400 whitespace-nowrap">
               {provider.provider_type ?? "unknown"}
             </span>
             <Button variant="ghost" size="icon" onClick={() => onEditProvider(name)}>
@@ -497,14 +497,14 @@ function ProviderCard({
           </div>
         </CardTitle>
         <CardDescription className="space-y-1">
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-slate-500">base_url:</span>
-            <code className="text-[11px] text-slate-300">{provider.base_url ?? "—"}</code>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs text-slate-500 shrink-0">base_url:</span>
+            <code className="text-sm text-slate-300 truncate">{provider.base_url ?? "—"}</code>
           </div>
           {apiKey && (
             <div className="flex items-center gap-2">
-              <Key className="w-3 h-3 text-slate-500" />
-              <code className="text-[11px] text-slate-400">
+              <Key className="w-3.5 h-3.5 text-slate-500" />
+              <code className="text-sm text-slate-400">
                 {showKey ? apiKey : apiKey.slice(0, 8) + "••••••••"}
               </code>
               <button

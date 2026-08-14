@@ -43,7 +43,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <div className="text-sm font-semibold text-white tracking-wide glow-text">
                 UniClaudeProxy
               </div>
-              <div className="text-[11px] uppercase tracking-[0.2em] text-brand-cyan/70">
+              <div className="text-xs tracking-[0.18em] text-brand-cyan/70">
                 Admin Console
               </div>
             </div>
@@ -67,7 +67,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <Icon className={cn("w-4 h-4", active && "text-brand-cyan")} />
                   <div className="flex-1">
                     <div className="font-medium">{it.label}</div>
-                    <div className="text-[11px] text-slate-500">{it.hint}</div>
+                    <div className="text-xs text-slate-500 leading-snug">{it.hint}</div>
                   </div>
                   <span
                     className={cn(
@@ -90,9 +90,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
               {loading ? "拉取中..." : "刷新数据"}
             </Button>
-            <div className="px-3 py-2 text-[11px] text-slate-500 flex items-center gap-2">
-              <Settings className="w-3.5 h-3.5" />
-              数据直接读写 config.json · 实时热重载
+            <div className="px-3 py-2 text-xs text-slate-500 flex items-center gap-2 leading-snug">
+              <Settings className="w-3.5 h-3.5 shrink-0" />
+              读写 config.json · 热重载
             </div>
           </div>
         </aside>
@@ -101,7 +101,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex-1 flex flex-col min-w-0">
           <header className="h-16 border-b border-brand-borderSubtle/60 bg-brand-panel/40 backdrop-blur-xl px-8 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-brand-borderSubtle bg-brand-panel2 text-[11px] text-brand-cyan">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-brand-borderSubtle bg-brand-panel2 text-xs text-brand-cyan whitespace-nowrap">
                 <Activity className="w-3 h-3" />
                 CONNECTED · 127.0.0.1:10388
               </span>

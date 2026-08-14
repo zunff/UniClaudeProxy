@@ -12,11 +12,13 @@ export function formatNumber(n: number | null | undefined): string {
 
 export function formatMoney(n: number | null | undefined, currency = "CNY"): string {
   if (n == null || Number.isNaN(n)) return "—";
+  const abs = Math.abs(n);
+  const digits = abs > 0 && abs < 0.01 ? 4 : 2;
   return new Intl.NumberFormat("zh-CN", {
     style: "currency",
     currency,
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 4,
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
   }).format(n);
 }
 

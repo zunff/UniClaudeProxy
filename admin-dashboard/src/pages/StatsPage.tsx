@@ -14,7 +14,6 @@ import {
 } from "recharts";
 import {
   AlertTriangle,
-  CalendarDays,
   Coins,
   Database,
   DollarSign,
@@ -71,7 +70,7 @@ function StatTile({
     rose: "from-rose-500/20 to-rose-500/0 border-rose-500/30 text-rose-300",
   };
   return (
-    <div className="tech-card p-5">
+    <div className="tech-card p-5 min-w-0">
       <div
         className={cn(
           "inline-flex items-center justify-center h-10 w-10 rounded-lg border bg-gradient-to-br",
@@ -80,10 +79,14 @@ function StatTile({
       >
         <Icon className={cn("w-5 h-5", iconClass)} />
       </div>
-      <div className="mt-4">
-        <div className="text-xs text-slate-400 uppercase tracking-wider">{title}</div>
-        <div className="mt-1 text-2xl font-bold text-white">{value}</div>
-        {sub && <div className="mt-1 text-[11px] text-slate-500">{sub}</div>}
+      <div className="mt-4 min-w-0">
+        <div className="text-sm text-slate-400 whitespace-nowrap">{title}</div>
+        <div className="mt-1 text-[28px] leading-none font-bold text-white tabular-nums tracking-tight whitespace-nowrap">
+          {value}
+        </div>
+        {sub && (
+          <div className="mt-2 text-sm text-slate-500 whitespace-nowrap">{sub}</div>
+        )}
       </div>
     </div>
   );
@@ -143,53 +146,58 @@ export default function StatsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold text-white tracking-wide glow-text">
             使用统计
           </h1>
-          <p className="text-sm text-slate-400 mt-1">
-            多维度查看用量、缓存命中与成本。数据来源：内存聚合 +
-            <code className="text-brand-cyan"> logs/billing.jsonl</code>。
+          <p className="text-sm text-slate-400 mt-1 whitespace-nowrap">
+            用量、缓存命中与成本 · 来源 <code className="text-brand-cyan">logs/billing.jsonl</code>
           </p>
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          <Tabs
-            value={statsRange}
-            onValueChange={(v) => setStatsRange(v as RangeKey, statsRange === "custom" ? { start, end } : undefined)}
-          >
-            <TabsList>
-              {RANGES.map((r) => (
-                <TabsTrigger key={r.key} value={r.key}>
-                  <CalendarDays className="w-3.5 h-3.5 mr-1.5" />
-                  {r.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-          {statsRange === "custom" && (
-            <div className="flex items-center gap-2">
-              <Input
-                type="date"
-                value={start}
-                onChange={(e) => setStart(e.target.value)}
-              />
-              <span className="text-slate-500">→</span>
-              <Input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
-              <Button
-                variant="primary"
-                onClick={() =>
-                  setStatsRange("custom", { start, end })
-                }
-              >
-                应用
-              </Button>
-            </div>
-          )}
-          <Button variant="ghost" size="icon" onClick={fetchStats} disabled={loading}>
-            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-          </Button>
-        </div>
+        <Button variant="ghost" size="icon" onClick={fetchStats} disabled={loading} className="shrink-0">
+          <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+        </Button>
+      </div>
+
+      <div className="flex items-center gap-3 overflow-x-auto scrollbar-thin pb-1">
+        <Tabs
+          value={statsRange}
+          onValueChange={(v) => setStatsRange(v as RangeKey, statsRange === "custom" ? { start, end } : undefined)}
+        >
+          <TabsList>
+            {RANGES.map((r) => (
+              <TabsTrigger key={r.key} value={r.key}>
+                {r.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        {statsRange === "custom" && (
+          <div className="flex items-center gap-2 shrink-0">
+            <Input
+              type="date"
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+              className="w-[10.5rem]"
+            />
+            <span className="text-slate-500">→</span>
+            <Input
+              type="date"
+              value={end}
+              onChange={(e) => setEnd(e.target.value)}
+              className="w-[10.5rem]"
+            />
+            <Button
+              variant="primary"
+              onClick={() =>
+                setStatsRange("custom", { start, end })
+              }
+            >
+              应用
+            </Button>
+          </div>
+        )}
       </div>
 
       {missingPriceRoutes.length > 0 && (
@@ -199,7 +207,7 @@ export default function StatsPage() {
             <span className="font-semibold text-brand-amber">
               缺少价格表，统计可能不准
             </span>
-            <div className="mt-1 text-xs text-slate-400">
+            <div className="mt-1 text-sm text-slate-400">
               以下模型路由没有对应的价格表，其成本不会被计入统计：
               <span className="text-rose-300 font-mono">
                 {" "}
@@ -211,7 +219,7 @@ export default function StatsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
         <StatTile
           icon={Server}
           accent="cyan"
@@ -285,13 +293,13 @@ export default function StatsPage() {
                       <XAxis
                         dataKey="date"
                         stroke="#64748b"
-                        fontSize={11}
+                        fontSize={13}
                         tickLine={false}
                         axisLine={false}
                       />
                       <YAxis
                         stroke="#64748b"
-                        fontSize={11}
+                        fontSize={13}
                         tickLine={false}
                         axisLine={false}
                       />
@@ -386,23 +394,23 @@ export default function StatsPage() {
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto scrollbar-thin">
-                <table className="w-full text-sm">
+                <table className="w-full text-[15px] whitespace-nowrap">
                   <thead>
                     <tr className="text-left text-slate-400 border-b border-brand-borderSubtle">
-                      <th className="px-3 py-2 font-medium">模型路由</th>
-                      <th className="px-3 py-2 font-medium text-right">请求</th>
-                      <th className="px-3 py-2 font-medium text-right">输入</th>
-                      <th className="px-3 py-2 font-medium text-right">缓存命中</th>
-                      <th className="px-3 py-2 font-medium text-right">缓存未命中</th>
-                      <th className="px-3 py-2 font-medium text-right">输出</th>
-                      <th className="px-3 py-2 font-medium text-right">成本</th>
-                      <th className="px-3 py-2 font-medium text-right">请求命中率</th>
+                      <th className="px-4 py-3 font-medium">模型路由</th>
+                      <th className="px-4 py-3 font-medium text-right">请求</th>
+                      <th className="px-4 py-3 font-medium text-right">输入</th>
+                      <th className="px-4 py-3 font-medium text-right">缓存命中</th>
+                      <th className="px-4 py-3 font-medium text-right">未命中</th>
+                      <th className="px-4 py-3 font-medium text-right">输出</th>
+                      <th className="px-4 py-3 font-medium text-right">成本</th>
+                      <th className="px-4 py-3 font-medium text-right">命中率</th>
                     </tr>
                   </thead>
                   <tbody>
                     {modelData.length === 0 && (
                       <tr>
-                        <td colSpan={8} className="px-3 py-10 text-center text-slate-400">
+                        <td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                           暂无数据
                         </td>
                       </tr>
@@ -421,28 +429,28 @@ export default function StatsPage() {
                           key={m.name}
                           className="border-b border-brand-borderSubtle/40 hover:bg-white/5"
                         >
-                          <td className="px-3 py-2 font-mono text-brand-cyan">{m.name}</td>
-                          <td className="px-3 py-2 text-right">{formatNumber(m.requests)}</td>
-                          <td className="px-3 py-2 text-right">{formatShort(m.input)}</td>
-                          <td className="px-3 py-2 text-right text-brand-green">
+                          <td className="px-4 py-3 font-mono text-brand-cyan">{m.name}</td>
+                          <td className="px-4 py-3 text-right tabular-nums">{formatNumber(m.requests)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums">{formatShort(m.input)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums text-brand-green">
                             {formatShort(m.cache)}
                           </td>
-                          <td className="px-3 py-2 text-right">
+                          <td className="px-4 py-3 text-right tabular-nums">
                             {formatShort(Math.max(m.input - m.cache, 0))}
                           </td>
-                          <td className="px-3 py-2 text-right">{formatShort(m.output)}</td>
-                          <td className="px-3 py-2 text-right text-brand-amber font-semibold">
+                          <td className="px-4 py-3 text-right tabular-nums">{formatShort(m.output)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums text-brand-amber font-semibold">
                             {formatMoney(m.cost, currency)}
                           </td>
-                          <td className="px-3 py-2 text-right">
-                            <span className="inline-flex items-center gap-1.5">
+                          <td className="px-4 py-3 text-right">
+                            <span className="inline-flex items-center gap-2">
                               <span className="h-1.5 w-16 rounded-full bg-slate-800 overflow-hidden">
                                 <span
                                   className="block h-full bg-brand-cyan"
                                   style={{ width: `${hitR * 100}%` }}
                                 />
                               </span>
-                              {Math.round(hitR * 100)}%
+                              <span className="tabular-nums w-10 text-right">{Math.round(hitR * 100)}%</span>
                             </span>
                           </td>
                         </tr>
@@ -465,22 +473,22 @@ export default function StatsPage() {
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto scrollbar-thin">
-                <table className="w-full text-sm">
+                <table className="w-full text-[15px] whitespace-nowrap">
                   <thead>
                     <tr className="text-left text-slate-400 border-b border-brand-borderSubtle">
-                      <th className="px-3 py-2 font-medium">日期</th>
-                      <th className="px-3 py-2 font-medium text-right">请求</th>
-                      <th className="px-3 py-2 font-medium text-right">输入</th>
-                      <th className="px-3 py-2 font-medium text-right">命中</th>
-                      <th className="px-3 py-2 font-medium text-right">输出</th>
-                      <th className="px-3 py-2 font-medium text-right">成本</th>
-                      <th className="px-3 py-2 font-medium text-right">数据源</th>
+                      <th className="px-4 py-3 font-medium">日期</th>
+                      <th className="px-4 py-3 font-medium text-right">请求</th>
+                      <th className="px-4 py-3 font-medium text-right">输入</th>
+                      <th className="px-4 py-3 font-medium text-right">命中</th>
+                      <th className="px-4 py-3 font-medium text-right">输出</th>
+                      <th className="px-4 py-3 font-medium text-right">成本</th>
+                      <th className="px-4 py-3 font-medium text-right">数据源</th>
                     </tr>
                   </thead>
                   <tbody>
                     {dateKeys.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="px-3 py-10 text-center text-slate-400">
+                        <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
                           暂无数据
                         </td>
                       </tr>
@@ -493,26 +501,26 @@ export default function StatsPage() {
                           key={d}
                           className="border-b border-brand-borderSubtle/40 hover:bg-white/5"
                         >
-                          <td className="px-3 py-2 font-mono">{d}</td>
-                          <td className="px-3 py-2 text-right">
+                          <td className="px-4 py-3 font-mono">{d}</td>
+                          <td className="px-4 py-3 text-right tabular-nums">
                             {formatNumber(t?.requests)}
                           </td>
-                          <td className="px-3 py-2 text-right">
+                          <td className="px-4 py-3 text-right tabular-nums">
                             {formatShort(t?.input_tokens)}
                           </td>
-                          <td className="px-3 py-2 text-right text-brand-green">
+                          <td className="px-4 py-3 text-right tabular-nums text-brand-green">
                             {formatShort(t?.cache_read_tokens)}
                           </td>
-                          <td className="px-3 py-2 text-right">
+                          <td className="px-4 py-3 text-right tabular-nums">
                             {formatShort(t?.output_tokens)}
                           </td>
-                          <td className="px-3 py-2 text-right text-brand-amber font-semibold">
+                          <td className="px-4 py-3 text-right tabular-nums text-brand-amber font-semibold">
                             {formatMoney(t?.cost, currency)}
                           </td>
-                          <td className="px-3 py-2 text-right text-[11px]">
+                          <td className="px-4 py-3 text-right">
                             <span
                               className={cn(
-                                "px-2 py-0.5 rounded-md border",
+                                "px-2.5 py-1 rounded-md border text-sm",
                                 b?.source === "memory"
                                   ? "border-brand-cyan/30 bg-brand-cyan/10 text-brand-cyan"
                                   : "border-brand-violet/30 bg-brand-violet/10 text-brand-violet",

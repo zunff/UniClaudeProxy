@@ -27,12 +27,29 @@ def _fc_to_toolu(fc_id: str) -> str:
     return f"toolu_{fc_id}"
 
 
+def _as_nonneg_int(value: Any) -> Optional[int]:
+    """Parse a non-negative int, or None when the value is absent/invalid."""
+    if value is None:
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
 def _extract_cache_read_tokens(usage: Any) -> int:
     """Extract cached input tokens from an OpenAI-compatible usage block.
 
-    DeepSeek exposes ``prompt_cache_hit_tokens``; OpenAI-style providers
-    expose ``prompt_tokens_details.cached_tokens``. Take whichever is present
-    so cache-hit information is no longer silently dropped.
+    Takes the largest positive value among:
+    - DeepSeek ``prompt_cache_hit_tokens``
+    - OpenAI ``prompt_tokens_details.cached_tokens`` / ``input_tokens_details``
+    - derived ``prompt_tokens - prompt_cache_miss_tokens`` when hit is absent
+      or explicitly 0 while miss > 0
+
+    An explicit 0 on one field must not hide a real count on another. Gateways
+    often zero ``prompt_cache_hit_tokens`` on streaming chunks while still
+    filling ``prompt_tokens_details.cached_tokens``.
 
     Args:
         usage: Any - The raw usage dict from the provider response.
@@ -42,15 +59,76 @@ def _extract_cache_read_tokens(usage: Any) -> int:
     """
     if not isinstance(usage, dict):
         return 0
-    hit = usage.get("prompt_cache_hit_tokens")
-    if hit is None:
-        details = usage.get("prompt_tokens_details")
+    candidates: list[int] = []
+
+    def _add(value: Any) -> None:
+        n = _as_nonneg_int(value)
+        if n:
+            candidates.append(n)
+
+    _add(usage.get("prompt_cache_hit_tokens"))
+    _add(usage.get("cached_tokens"))
+    _add(usage.get("cache_read_input_tokens"))
+    for details_key in ("prompt_tokens_details", "input_tokens_details"):
+        details = usage.get(details_key)
         if isinstance(details, dict):
-            hit = details.get("cached_tokens")
-    try:
-        return int(hit or 0)
-    except (TypeError, ValueError):
-        return 0
+            _add(details.get("cached_tokens"))
+
+    prompt = _as_nonneg_int(usage.get("prompt_tokens"))
+    if prompt is None:
+        prompt = _as_nonneg_int(usage.get("input_tokens"))
+    miss = _as_nonneg_int(usage.get("prompt_cache_miss_tokens"))
+    hit = _as_nonneg_int(usage.get("prompt_cache_hit_tokens"))
+    if prompt is not None and miss is not None:
+        if hit is None or (hit == 0 and miss > 0):
+            derived = prompt - miss
+            if derived > 0:
+                candidates.append(derived)
+
+    return max(candidates) if candidates else 0
+
+
+def _ingest_openai_chat_usage(
+    data: dict[str, Any],
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+) -> tuple[int, int, int]:
+    """Update running token counters from an OpenAI chat-completions chunk.
+
+    Args:
+        data: dict[str, Any] - One parsed SSE JSON object.
+        input_tokens: int - Current input token count.
+        output_tokens: int - Current output token count.
+        cache_read_tokens: int - Current cache-hit token count.
+
+    Returns:
+        tuple[int, int, int] - Updated (input, output, cache_read) counts.
+    """
+    usage_data = data.get("usage")
+    sources: list[dict[str, Any]] = []
+    if isinstance(usage_data, dict):
+        sources.append(usage_data)
+        debug_logger.debug(
+            "OpenAI stream usage: %s",
+            json.dumps(usage_data, ensure_ascii=False)[:800],
+        )
+    if not sources:
+        sources.append(data)
+
+    for src in sources:
+        ct = _as_nonneg_int(src.get("completion_tokens"))
+        if ct:
+            output_tokens = ct
+        pt = _as_nonneg_int(src.get("prompt_tokens"))
+        if pt:
+            input_tokens = pt
+        hit = _extract_cache_read_tokens(src)
+        if not hit and src is not data:
+            hit = _extract_cache_read_tokens(data)
+        if hit:
+            cache_read_tokens = hit
+    return input_tokens, output_tokens, cache_read_tokens
 
 
 def _generate_message_id() -> str:
@@ -533,7 +611,9 @@ async def stream_openai_chat_to_anthropic(
                 continue
 
             if line == "data: [DONE]":
-                break
+                # Do not break: some gateways append the usage chunk after
+                # [DONE] in the same buffer, and breaking would drop cache hits.
+                continue
 
             if not line.startswith("data: "):
                 continue
@@ -544,13 +624,9 @@ async def stream_openai_chat_to_anthropic(
             except json.JSONDecodeError:
                 continue
 
-            usage_data = data.get("usage")
-            if usage_data:
-                output_tokens = usage_data.get("completion_tokens", output_tokens)
-                input_tokens = usage_data.get("prompt_tokens", input_tokens)
-                hit = _extract_cache_read_tokens(usage_data)
-                if hit:
-                    cache_read_tokens = hit
+            input_tokens, output_tokens, cache_read_tokens = _ingest_openai_chat_usage(
+                data, input_tokens, output_tokens, cache_read_tokens,
+            )
 
             choices = data.get("choices", [])
             if not choices:
@@ -629,6 +705,17 @@ async def stream_openai_chat_to_anthropic(
                         tool_index_map[tc_index],
                         args_delta,
                     )
+
+    leftover = buffer.strip()
+    if leftover.startswith("data: ") and leftover != "data: [DONE]":
+        try:
+            data = json.loads(leftover[6:])
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            input_tokens, output_tokens, cache_read_tokens = _ingest_openai_chat_usage(
+                data, input_tokens, output_tokens, cache_read_tokens,
+            )
 
     if thinking_block_started:
         yield _build_content_block_stop_event(thinking_block_index)

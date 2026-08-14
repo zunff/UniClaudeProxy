@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
@@ -10,6 +11,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import config_path, load_config, reload_config, resolve_route
+from app import billing
 from app.watcher import ConfigWatcher
 from app.converters.gemini_to_anthropic import (
     build_tool_param_index,
@@ -112,6 +114,44 @@ class LocalOnlyMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(LocalOnlyMiddleware)
+
+
+def _accumulate_stream_usage(event: str, acc: dict[str, int]) -> None:
+    """Extract usage tokens from an Anthropic SSE event into acc.
+
+    Scans message_start (message.usage) and message_delta (usage) events,
+    overwriting with the latest non-zero value so the final message_delta
+    (which carries the real input/cache fields) wins.
+
+    Args:
+        event: str - One Anthropic SSE event string.
+        acc: dict[str, int] - Mutable accumulator for input/output/cache tokens.
+    """
+    for line in event.split("\n"):
+        line = line.strip()
+        if not line.startswith("data: "):
+            continue
+        try:
+            data = json.loads(line[6:])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        etype = data.get("type", "")
+        if etype == "message_start":
+            u = (data.get("message") or {}).get("usage") or {}
+        elif etype == "message_delta":
+            u = data.get("usage") or {}
+        else:
+            continue
+        if not isinstance(u, dict):
+            continue
+        if u.get("input_tokens"):
+            acc["input"] = u["input_tokens"]
+        if u.get("output_tokens"):
+            acc["output"] = u["output_tokens"]
+        if u.get("cache_read_input_tokens"):
+            acc["cache_read"] = u["cache_read_input_tokens"]
+        if u.get("cache_creation_input_tokens"):
+            acc["cache_creation"] = u["cache_creation_input_tokens"]
 
 
 @app.post("/v1/messages")
@@ -431,6 +471,7 @@ async def _handle_force_stream_non_streaming(
     """
     original_stream = request.stream
     request.stream = True
+    start = time.perf_counter()
 
     try:
         if route.provider_type == "gemini":
@@ -447,7 +488,7 @@ async def _handle_force_stream_non_streaming(
         text_parts: list[str] = []
         content_blocks: list[dict] = []
         stop_reason = "end_turn"
-        usage = {"input_tokens": 0, "output_tokens": 0}
+        usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
         current_block: dict | None = None
 
         async for event_str in converter:
@@ -505,9 +546,14 @@ async def _handle_force_stream_non_streaming(
                             usage["output_tokens"] = u["output_tokens"]
                         if u.get("input_tokens"):
                             usage["input_tokens"] = u["input_tokens"]
+                        if u.get("cache_read_input_tokens"):
+                            usage["cache_read_input_tokens"] = u["cache_read_input_tokens"]
+                        if u.get("cache_creation_input_tokens"):
+                            usage["cache_creation_input_tokens"] = u["cache_creation_input_tokens"]
 
     except Exception as e:
         logger.error("Force-stream non-streaming error [provider=%s]: %s", route.provider_name, e)
+        billing.record(route, anthropic_model, None, is_stream=True, success=False, latency_ms=(time.perf_counter() - start) * 1000)
         return JSONResponse(
             status_code=502,
             content={
@@ -532,6 +578,7 @@ async def _handle_force_stream_non_streaming(
         "usage": usage,
     }
 
+    billing.record(route, anthropic_model, usage, is_stream=True, success=True, latency_ms=(time.perf_counter() - start) * 1000)
     return JSONResponse(content=response_body)
 
 
@@ -551,6 +598,7 @@ async def _handle_non_streaming(
         JSONResponse - The Anthropic-formatted response.
     """
     _gemini_pi = build_tool_param_index(request.tools) if route.provider_type == "gemini" and request.tools else None
+    start = time.perf_counter()
     try:
         if route.provider_type == "gemini":
             raw_response = await gemini_provider.send_non_streaming(request, route)
@@ -558,10 +606,11 @@ async def _handle_non_streaming(
             raw_response = await openai_provider.send_non_streaming(request, route)
         # Log raw response for debugging
         debug_logger.debug("Raw provider response: %s", json.dumps(raw_response))
-        
+
         # Check if the response is an error
         if raw_response.get("code") != 0 and raw_response.get("success") is False:
             logger.error("Upstream provider error [provider=%s]: %s", route.provider_name, raw_response.get("msg"))
+            billing.record(route, anthropic_model, None, is_stream=False, success=False, latency_ms=(time.perf_counter() - start) * 1000)
             return JSONResponse(
                 status_code=502,
                 content={
@@ -571,6 +620,7 @@ async def _handle_non_streaming(
             )
     except Exception as e:
         logger.error("Provider request failed [provider=%s]: %s", route.provider_name, e)
+        billing.record(route, anthropic_model, None, is_stream=False, success=False, latency_ms=(time.perf_counter() - start) * 1000)
         return JSONResponse(
             status_code=502,
             content={
@@ -591,6 +641,7 @@ async def _handle_non_streaming(
     except Exception as e:
         logger.error("Response conversion failed [provider=%s]: %s", route.provider_name, e)
         logger.error("Raw response that caused conversion error: %s", json.dumps(raw_response))
+        billing.record(route, anthropic_model, None, is_stream=False, success=False, latency_ms=(time.perf_counter() - start) * 1000)
         return JSONResponse(
             status_code=500,
             content={
@@ -608,14 +659,19 @@ async def _handle_non_streaming(
         if "output_tokens" not in anthropic_response["usage"]:
             anthropic_response["usage"]["output_tokens"] = 0
 
+    usage = anthropic_response.get("usage", {})
+    cache_read = usage.get("cache_read_input_tokens", 0)
     logger.info(
-        "Response [provider=%s]: model=%s, stop_reason=%s, output_tokens=%d, input_tokens=%d",
+        "Response [provider=%s]: model=%s, stop_reason=%s, output_tokens=%d, input_tokens=%d, cache_read=%d, cache_hit=%s",
         route.provider_name,
         anthropic_model,
         anthropic_response.get("stop_reason", "unknown"),
-        anthropic_response.get("usage", {}).get("output_tokens", 0),
-        anthropic_response.get("usage", {}).get("input_tokens", 0),
+        usage.get("output_tokens", 0),
+        usage.get("input_tokens", 0),
+        cache_read,
+        bool(cache_read),
     )
+    billing.record(route, anthropic_model, usage, is_stream=False, success=True, latency_ms=(time.perf_counter() - start) * 1000)
 
     return JSONResponse(content=anthropic_response)
 
@@ -641,34 +697,43 @@ async def _handle_streaming(
         Yields:
             str - Anthropic-formatted SSE event strings.
         """
+        start = time.perf_counter()
+        acc: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+        success = True
         try:
             if route.provider_type == "gemini":
                 _pi = build_tool_param_index(request.tools) if request.tools else None
                 raw_stream = gemini_provider.send_streaming(request, route)
-                async for event in stream_gemini_to_anthropic(raw_stream, anthropic_model, param_index=_pi):
-                    # Log streaming events for debugging
-                    debug_logger.debug("Streaming event: %s", event.strip())
-                    yield event
+                converter = stream_gemini_to_anthropic(raw_stream, anthropic_model, param_index=_pi)
             elif route.use_responses:
                 raw_stream = openai_provider.send_streaming(request, route)
-                async for event in stream_openai_responses_to_anthropic(raw_stream, anthropic_model, tool_mapping=route.tool_mapping or None):
-                    # Log streaming events for debugging
-                    debug_logger.debug("Streaming event: %s", event.strip())
-                    yield event
+                converter = stream_openai_responses_to_anthropic(raw_stream, anthropic_model, tool_mapping=route.tool_mapping or None)
             else:
                 raw_stream = openai_provider.send_streaming(request, route)
-                async for event in stream_openai_chat_to_anthropic(raw_stream, anthropic_model):
-                    # Log streaming events for debugging
-                    debug_logger.debug("Streaming event: %s", event.strip())
-                    yield event
+                converter = stream_openai_chat_to_anthropic(raw_stream, anthropic_model)
+
+            async for event in converter:
+                # Log streaming events for debugging
+                debug_logger.debug("Streaming event: %s", event.strip())
+                _accumulate_stream_usage(event, acc)
+                yield event
 
         except Exception as e:
+            success = False
             logger.error("Streaming error [provider=%s]: %s", route.provider_name, e)
             error_event = json.dumps({
                 "type": "error",
                 "error": {"type": "api_error", "message": f"Streaming error: {e}"},
             })
             yield f"event: error\ndata: {error_event}\n\n"
+        finally:
+            usage = {
+                "input_tokens": acc["input"],
+                "output_tokens": acc["output"],
+                "cache_read_input_tokens": acc["cache_read"],
+                "cache_creation_input_tokens": acc["cache_creation"],
+            }
+            billing.record(route, anthropic_model, usage, is_stream=True, success=success, latency_ms=(time.perf_counter() - start) * 1000)
 
     return StreamingResponse(
         event_generator(),
@@ -689,6 +754,39 @@ async def health_check() -> dict[str, str]:
         dict[str, str] - Health status.
     """
     return {"status": "ok"}
+
+
+@app.get("/stats")
+async def stats(date: str | None = None) -> dict[str, Any]:
+    """Return billing/usage statistics.
+
+    Args:
+        date: str | None - Optional Beijing date (YYYY-MM-DD). When provided,
+            returns stats for that day; otherwise returns today's stats and
+            a list of available dates.
+
+    Returns:
+        dict[str, Any] - Billing stats snapshot.
+    """
+    return billing.get_stats(date=date)
+
+
+@app.delete("/stats")
+async def reset_stats(date: str | None = None) -> dict[str, bool]:
+    """Clear in-memory billing aggregates (does not touch the JSONL file).
+
+    Args:
+        date: str | None - Optional Beijing date (YYYY-MM-DD). When provided,
+            clears aggregates for that day only; otherwise clears all days.
+
+    Returns:
+        dict[str, bool] - Confirmation that stats were reset.
+    """
+    billing.reset_stats(date=date)
+    payload: dict[str, bool] = {"reset": True}
+    if date:
+        payload["date_reset"] = True
+    return payload
 
 
 @app.api_route("/api/hello", methods=["GET", "HEAD"])

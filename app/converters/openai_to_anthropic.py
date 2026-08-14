@@ -27,6 +27,32 @@ def _fc_to_toolu(fc_id: str) -> str:
     return f"toolu_{fc_id}"
 
 
+def _extract_cache_read_tokens(usage: Any) -> int:
+    """Extract cached input tokens from an OpenAI-compatible usage block.
+
+    DeepSeek exposes ``prompt_cache_hit_tokens``; OpenAI-style providers
+    expose ``prompt_tokens_details.cached_tokens``. Take whichever is present
+    so cache-hit information is no longer silently dropped.
+
+    Args:
+        usage: Any - The raw usage dict from the provider response.
+
+    Returns:
+        int - Cached input tokens (0 when absent).
+    """
+    if not isinstance(usage, dict):
+        return 0
+    hit = usage.get("prompt_cache_hit_tokens")
+    if hit is None:
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            hit = details.get("cached_tokens")
+    try:
+        return int(hit or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _generate_message_id() -> str:
     """Generate a unique Anthropic-style message ID.
 
@@ -135,6 +161,7 @@ def from_openai_chat_response(
         content_blocks.append({"type": "text", "text": ""})
 
     usage = response_data.get("usage", {})
+    cache_read_tokens = _extract_cache_read_tokens(usage)
 
     return {
         "id": _generate_message_id(),
@@ -148,7 +175,7 @@ def from_openai_chat_response(
             "input_tokens": usage.get("prompt_tokens", 0),
             "output_tokens": usage.get("completion_tokens", 0),
             "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
+            "cache_read_input_tokens": cache_read_tokens,
         },
     }
 
@@ -231,6 +258,7 @@ def from_openai_responses_response(
         stop_reason = "tool_use"
 
     usage = response_data.get("usage", {})
+    cache_read_tokens = _extract_cache_read_tokens(usage)
 
     return {
         "id": _generate_message_id(),
@@ -244,7 +272,7 @@ def from_openai_responses_response(
             "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
             "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
+            "cache_read_input_tokens": cache_read_tokens,
         },
     }
 
@@ -408,12 +436,25 @@ def _build_content_block_stop_event(index: int) -> str:
     })
 
 
-def _build_message_delta_event(stop_reason: str, output_tokens: int = 0) -> str:
+def _build_message_delta_event(
+    stop_reason: str,
+    output_tokens: int = 0,
+    input_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> str:
     """Build the Anthropic message_delta SSE event.
+
+    The final usage (including input tokens and cache fields, which are only
+    known once the upstream usage chunk arrives at end of stream) is carried
+    here so downstream consumers (client + billing) see the real numbers.
 
     Args:
         stop_reason: str - The reason generation stopped.
         output_tokens: int - Total output tokens generated.
+        input_tokens: int - Total input tokens consumed.
+        cache_read_tokens: int - Cached input tokens (cache hit).
+        cache_creation_tokens: int - Tokens written to cache.
 
     Returns:
         str - Formatted message_delta SSE event.
@@ -421,7 +462,12 @@ def _build_message_delta_event(stop_reason: str, output_tokens: int = 0) -> str:
     return _sse_event("message_delta", {
         "type": "message_delta",
         "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-        "usage": {"output_tokens": output_tokens},
+        "usage": {
+            "output_tokens": output_tokens,
+            "input_tokens": input_tokens,
+            "cache_read_input_tokens": cache_read_tokens,
+            "cache_creation_input_tokens": cache_creation_tokens,
+        },
     })
 
 
@@ -466,6 +512,8 @@ async def stream_openai_chat_to_anthropic(
     text_block_started = False
     thinking_block_started = False
     output_tokens = 0
+    input_tokens = 0
+    cache_read_tokens = 0
     finish_reason = "stop"
 
     yield _build_message_start_event(anthropic_model, msg_id)
@@ -499,6 +547,10 @@ async def stream_openai_chat_to_anthropic(
             usage_data = data.get("usage")
             if usage_data:
                 output_tokens = usage_data.get("completion_tokens", output_tokens)
+                input_tokens = usage_data.get("prompt_tokens", input_tokens)
+                hit = _extract_cache_read_tokens(usage_data)
+                if hit:
+                    cache_read_tokens = hit
 
             choices = data.get("choices", [])
             if not choices:
@@ -592,7 +644,12 @@ async def stream_openai_chat_to_anthropic(
         yield _build_content_block_stop_event(tool_index_map[tc_idx])
 
     stop_reason = _map_finish_reason_to_stop_reason(finish_reason)
-    yield _build_message_delta_event(stop_reason, output_tokens)
+    yield _build_message_delta_event(
+        stop_reason,
+        output_tokens,
+        input_tokens=input_tokens,
+        cache_read_tokens=cache_read_tokens,
+    )
     yield _build_message_stop_event()
 
 

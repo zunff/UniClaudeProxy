@@ -121,6 +121,22 @@ class UpstreamConfig(BaseModel):
     disabled_routes: list[str] = Field(default_factory=list)
 
 
+class BillingConfig(BaseModel):
+    """Billing / usage statistics configuration.
+
+    Attributes:
+        enabled: bool - Master switch. When False, all billing logic is skipped.
+        log_file: str - Append-only JSONL path for per-request billing records.
+        prices: dict - Price table keyed by "provider/model_id". Each entry may
+            carry peak/offpeak tiers (per 1M tokens, CNY) plus peak_hours (Beijing
+            time). Routes without an entry record token usage but cost=None.
+    """
+
+    enabled: bool = False
+    log_file: str = "logs/billing.jsonl"
+    prices: dict[str, Any] = Field(default_factory=dict)
+
+
 class AppConfig(BaseModel):
     """Root application configuration.
 
@@ -134,6 +150,7 @@ class AppConfig(BaseModel):
     models: dict[str, str | list[str] | dict[str, int]] = Field(default_factory=dict)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
+    billing: BillingConfig = Field(default_factory=BillingConfig)
 
 
 class ResolvedRoute:

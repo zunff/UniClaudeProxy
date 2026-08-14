@@ -4,6 +4,7 @@ import {
   Banknote,
   Layers,
   Link2,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -211,14 +212,6 @@ function PriceForm({
                 闲时 {currency}/1M tokens
               </span>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setOffpeak({ ...peak })}
-              type="button"
-            >
-              同步高峰价
-            </Button>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div>
@@ -420,7 +413,7 @@ export default function PricesPage() {
                       <Dialog>
                         <DialogTrigger asChild>
                           <Button variant="ghost" size="icon">
-                            <RefreshCw className="w-4 h-4" />
+                            <Pencil className="w-4 h-4" />
                           </Button>
                         </DialogTrigger>
                         <DialogContent>

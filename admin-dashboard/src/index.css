@@ -33,9 +33,12 @@
   body,
   #root {
     height: 100%;
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background text-foreground;
     font-family:
       ui-sans-serif,
       system-ui,
@@ -45,6 +48,12 @@
       "PingFang SC",
       "Microsoft YaHei",
       sans-serif;
+    overflow-x: hidden;
+  }
+  main {
+    will-change: scroll-position;
+    transform: translateZ(0);
+    backface-visibility: hidden;
   }
 }
 

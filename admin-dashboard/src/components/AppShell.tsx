@@ -25,13 +25,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="relative min-h-screen bg-brand-bg text-slate-100">
       {/* Background decorations */}
-      <div className="pointer-events-none absolute inset-0 tech-grid animate-grid-move opacity-40" />
-      <div className="pointer-events-none absolute -top-32 -left-32 w-96 h-96 rounded-full bg-brand-cyan/20 blur-[120px]" />
-      <div className="pointer-events-none absolute -bottom-40 -right-32 w-[480px] h-[480px] rounded-full bg-brand-violet/15 blur-[140px]" />
+      <div className="pointer-events-none absolute inset-0 tech-grid opacity-30" style={{ animation: "none" }} />
+      <div className="pointer-events-none absolute -top-32 -left-32 w-96 h-96 rounded-full bg-brand-cyan/15 blur-[120px]" />
+      <div className="pointer-events-none absolute -bottom-40 -right-32 w-[480px] h-[480px] rounded-full bg-brand-violet/10 blur-[140px]" />
 
       <div className="relative z-10 flex min-h-screen">
         {/* Sidebar */}
-        <aside className="w-72 shrink-0 border-r border-brand-borderSubtle/60 bg-brand-panel/60 backdrop-blur-xl">
+        <aside className="w-72 shrink-0 border-r border-brand-borderSubtle/60 bg-brand-panel/80">
           <div className="h-16 px-5 flex items-center gap-3 border-b border-brand-borderSubtle/60">
             <div className="relative">
               <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-brand-cyan to-brand-violet flex items-center justify-center shadow-glowViolet">
@@ -80,26 +80,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             })}
           </nav>
 
-          <div className="absolute bottom-5 left-3 right-3 space-y-2">
-            <Button
-              variant="secondary"
-              className="w-full"
-              onClick={fetchAll}
-              disabled={loading}
-            >
-              <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-              {loading ? "拉取中..." : "刷新数据"}
-            </Button>
+          <div className="absolute bottom-5 left-3 right-3">
             <div className="px-3 py-2 text-xs text-slate-500 flex items-center gap-2 leading-snug">
               <Settings className="w-3.5 h-3.5 shrink-0" />
-              读写 config.json · 热重载
+              <span>读写 config.json · 热重载配置</span>
             </div>
           </div>
         </aside>
 
         {/* Main */}
         <div className="flex-1 flex flex-col min-w-0">
-          <header className="h-16 border-b border-brand-borderSubtle/60 bg-brand-panel/40 backdrop-blur-xl px-8 flex items-center justify-between">
+          <header className="h-16 border-b border-brand-borderSubtle/60 bg-brand-panel/80 px-8 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-brand-borderSubtle bg-brand-panel2 text-xs text-brand-cyan whitespace-nowrap">
                 <Activity className="w-3 h-3" />
@@ -117,7 +108,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </header>
 
-          <main className="flex-1 p-8 overflow-x-auto scrollbar-thin">
+          <main className="flex-1 p-8 overflow-y-auto scrollbar-thin" style={{ scrollBehavior: "smooth", WebkitOverflowScrolling: "touch" }}>
             {children}
           </main>
         </div>

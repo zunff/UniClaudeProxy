@@ -69,7 +69,26 @@ export interface StatsBucket {
   totals: StatsTotals;
   cache: { hit_requests: number; hit_rate: number; cached_token_ratio: number };
   by_model: Record<string, StatsTotals>;
-  source?: "memory" | "jsonl";
+  source?: "memory" | "jsonl" | "sqlite";
+}
+
+export interface RecentRecord {
+  id: number;
+  ts: string;
+  date: string;
+  provider: string;
+  model: string;
+  anthropic_model: string;
+  is_stream: boolean;
+  success: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  cache_miss_tokens: number;
+  cost: number | null;
+  currency: string | null;
+  latency_ms: number | null;
 }
 
 export interface StatsResponse {
@@ -77,6 +96,7 @@ export interface StatsResponse {
   date_keys: string[];
   total: StatsBucket;
   per_day: Record<string, StatsBucket>;
+  recent: RecentRecord[];
 }
 
 // --- Store ---
@@ -173,11 +193,14 @@ export const useAdmin = create<AdminState>((set, get) => ({
       params.set("start_date", statsCustom.start);
       params.set("end_date", statsCustom.end);
     }
+    set({ loading: true });
     try {
       const data = await http<StatsResponse>(`/api/stats?${params.toString()}`);
       set({ stats: data });
     } catch (e: any) {
       toast.error("统计加载失败", { description: e?.message });
+    } finally {
+      set({ loading: false });
     }
   },
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -14,6 +14,8 @@ import {
 } from "recharts";
 import {
   AlertTriangle,
+  CheckCircle2,
+  Clock,
   Coins,
   Database,
   DollarSign,
@@ -21,6 +23,8 @@ import {
   RefreshCw,
   Server,
   TrendingUp,
+  XCircle,
+  Zap,
 } from "lucide-react";
 import { useAdmin } from "@/store/admin";
 import { Button } from "@/components/ui/button";
@@ -92,19 +96,67 @@ function StatTile({
   );
 }
 
+const AUTO_REFRESH_MS = 30_000;
+
 export default function StatsPage() {
   const { stats, statsRange, setStatsRange, fetchStats, loading, pricesResp } =
     useAdmin();
   const [start, setStart] = useState(todayStr(-6));
   const [end, setEnd] = useState(todayStr(0));
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loadingRef = useRef(loading);
 
   useEffect(() => {
-    fetchStats();
+    loadingRef.current = loading;
+  }, [loading]);
+
+  useEffect(() => {
+    fetchStats().then(() => setLastUpdated(new Date()));
   }, []);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+
+    const tick = () => {
+      if (document.visibilityState !== "visible") return;
+      if (loadingRef.current) return;
+      fetchStats().then(() => setLastUpdated(new Date()));
+    };
+
+    timerRef.current = setInterval(tick, AUTO_REFRESH_MS);
+
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [autoRefresh, fetchStats]);
+
+  const handleRefresh = () => {
+    fetchStats().then(() => setLastUpdated(new Date()));
+  };
+
+  const formatLastUpdated = () => {
+    if (!lastUpdated) return "";
+    const diff = Math.floor((Date.now() - lastUpdated.getTime()) / 1000);
+    if (diff < 5) return "刚刚";
+    if (diff < 60) return `${diff} 秒前`;
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+    return lastUpdated.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  };
 
   const totals = stats?.total.totals;
   const cache = stats?.total.cache;
   const dateKeys = stats?.date_keys ?? [];
+  const recent = stats?.recent ?? [];
   const currency = "CNY";
 
   const missingPriceRoutes = useMemo(() => {
@@ -152,12 +204,41 @@ export default function StatsPage() {
             使用统计
           </h1>
           <p className="text-sm text-slate-400 mt-1 whitespace-nowrap">
-            用量、缓存命中与成本 · 来源 <code className="text-brand-cyan">logs/billing.jsonl</code>
+            用量、缓存命中与成本 · 来源 <code className="text-brand-cyan">SQLite</code>
+            {lastUpdated && (
+              <span className="ml-2 text-slate-500">· 更新于 {formatLastUpdated()}</span>
+            )}
           </p>
         </div>
-        <Button variant="ghost" size="icon" onClick={fetchStats} disabled={loading} className="shrink-0">
-          <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setAutoRefresh((v) => !v)}
+            className={cn(
+              "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs transition-colors",
+              autoRefresh
+                ? "border-brand-cyan/30 bg-brand-cyan/10 text-brand-cyan"
+                : "border-brand-borderSubtle bg-slate-900/40 text-slate-500 hover:text-slate-300",
+            )}
+            title={autoRefresh ? "自动刷新已开启" : "自动刷新已关闭"}
+          >
+            <span
+              className={cn(
+                "w-1.5 h-1.5 rounded-full",
+                autoRefresh ? "bg-brand-cyan animate-pulse" : "bg-slate-600",
+              )}
+            />
+            自动刷新
+          </button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleRefresh}
+            disabled={loading}
+            title="刷新数据"
+          >
+            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+          </Button>
+        </div>
       </div>
 
       <div className="flex items-center gap-3 overflow-x-auto scrollbar-thin pb-1">
@@ -271,6 +352,14 @@ export default function StatsPage() {
           <TabsTrigger value="trend">趋势（每日）</TabsTrigger>
           <TabsTrigger value="models">按模型拆分</TabsTrigger>
           <TabsTrigger value="raw">原始明细</TabsTrigger>
+          <TabsTrigger value="recent">
+            近期请求
+            {recent.length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-brand-cyan/20 text-brand-cyan text-[10px] font-medium">
+                {recent.length}
+              </span>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="trend">
@@ -521,12 +610,12 @@ export default function StatsPage() {
                             <span
                               className={cn(
                                 "px-2.5 py-1 rounded-md border text-sm",
-                                b?.source === "memory"
+                                b?.source === "sqlite"
                                   ? "border-brand-cyan/30 bg-brand-cyan/10 text-brand-cyan"
                                   : "border-brand-violet/30 bg-brand-violet/10 text-brand-violet",
                               )}
                             >
-                              {b?.source === "memory" ? "内存聚合" : "JSONL 文件"}
+                              {b?.source === "sqlite" ? "SQLite" : b?.source === "memory" ? "内存聚合" : "JSONL 文件"}
                             </span>
                           </td>
                         </tr>
@@ -535,6 +624,117 @@ export default function StatsPage() {
                   </tbody>
                 </table>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="recent">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-brand-cyan" />
+                    近期请求列表
+                  </CardTitle>
+                  <CardDescription>
+                    最近 {recent.length} 条请求记录（当前查询范围）
+                  </CardDescription>
+                </div>
+                <Button variant="ghost" size="icon" onClick={handleRefresh} disabled={loading}>
+                  <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {recent.length === 0 ? (
+                <div className="py-14 text-center text-slate-400">
+                  <Server className="mx-auto w-10 h-10 text-brand-cyan/60 mb-3" />
+                  <div>当前范围暂无请求记录</div>
+                </div>
+              ) : (
+                <div className="overflow-x-auto scrollbar-thin">
+                  <table className="w-full text-sm whitespace-nowrap">
+                    <thead>
+                      <tr className="text-left text-slate-400 border-b border-brand-borderSubtle">
+                        <th className="px-3 py-2.5 font-medium">时间</th>
+                        <th className="px-3 py-2.5 font-medium">状态</th>
+                        <th className="px-3 py-2.5 font-medium">Provider / Model</th>
+                        <th className="px-3 py-2.5 font-medium text-right">输入</th>
+                        <th className="px-3 py-2.5 font-medium text-right">输出</th>
+                        <th className="px-3 py-2.5 font-medium text-right">缓存</th>
+                        <th className="px-3 py-2.5 font-medium text-right">成本</th>
+                        <th className="px-3 py-2.5 font-medium text-right">延迟</th>
+                        <th className="px-3 py-2.5 font-medium">类型</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recent.map((r) => (
+                        <tr
+                          key={r.id}
+                          className="border-b border-brand-borderSubtle/40 hover:bg-white/5"
+                        >
+                          <td className="px-3 py-2.5 text-slate-300 font-mono text-xs">
+                            {r.ts?.replace("T", " ")}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            {r.success ? (
+                              <span className="inline-flex items-center gap-1 text-brand-green">
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                成功
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-rose-400">
+                                <XCircle className="w-3.5 h-3.5" />
+                                失败
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <div className="font-mono text-brand-cyan text-xs">
+                              {r.provider}/{r.model}
+                            </div>
+                            {r.is_stream && (
+                              <Zap className="w-3 h-3 text-brand-amber inline mt-0.5" />
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">
+                            {formatShort(r.input_tokens)}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-300">
+                            {formatShort(r.output_tokens)}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">
+                            {r.cache_read_tokens > 0 ? (
+                              <span className="text-brand-green">{formatShort(r.cache_read_tokens)}</span>
+                            ) : (
+                              <span className="text-slate-600">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-brand-amber font-semibold">
+                            {r.cost != null ? formatMoney(r.cost, r.currency || currency) : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-400">
+                            {r.latency_ms != null ? `${r.latency_ms.toFixed(0)}ms` : "—"}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span
+                              className={cn(
+                                "px-1.5 py-0.5 rounded text-[10px] font-medium",
+                                r.is_stream
+                                  ? "bg-brand-amber/10 text-brand-amber border border-brand-amber/20"
+                                  : "bg-brand-violet/10 text-brand-violet border border-brand-violet/20",
+                              )}
+                            >
+                              {r.is_stream ? "流式" : "非流式"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

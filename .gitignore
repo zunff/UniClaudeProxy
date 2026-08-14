@@ -26,6 +26,7 @@ debug.log
 .env
 .env.*
 
+.trae/
 .idea/
 .vscode/
 *.swp

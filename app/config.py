@@ -126,19 +126,31 @@ class BillingConfig(BaseModel):
 
     Attributes:
         enabled: bool - Master switch. When False, all billing logic is skipped.
-        log_file: str - Append-only JSONL path for per-request billing records.
+        db_file: str - SQLite database path for per-request billing records.
+        log_file: str - (Deprecated) legacy JSONL path. Kept only so old
+            configs don't break; new records go to SQLite. On first run,
+            existing JSONL is migrated into the database and renamed to
+            `<log_file>.migrated`.
         prices: dict - Named price tables (key = price name, e.g.
             "deepseek-v4-flash"). Each entry may carry peak/offpeak tiers
             (per 1M tokens, CNY) plus peak_hours (Beijing time).
         price_bindings: dict - Maps "provider/model_id" route keys to price
             table names. Multiple routes can share the same price table.
             Routes without a binding record token usage but cost=None.
+        retention_days: int - Auto-cleanup retention window in days. Records
+            older than this are deleted by the background scheduler. Set to
+            0 to disable auto-cleanup (keep forever).
+        cleanup_hour: int - Beijing-time hour (0-23) at which the daily
+            cleanup job runs. Default 3 (3 AM).
     """
 
     enabled: bool = False
+    db_file: str = "logs/billing.db"
     log_file: str = "logs/billing.jsonl"
     prices: dict[str, Any] = Field(default_factory=dict)
     price_bindings: dict[str, str] = Field(default_factory=dict)
+    retention_days: int = 90
+    cleanup_hour: int = 3
 
 
 class AppConfig(BaseModel):

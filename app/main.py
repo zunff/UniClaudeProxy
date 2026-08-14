@@ -814,96 +814,6 @@ def _write_raw_prices(raw: dict[str, Any]) -> None:
     reload_config()
 
 
-def _load_billing_records(log_file: str | None) -> list[dict[str, Any]]:
-    """Load billing JSONL records (for multi-date aggregation in UI)."""
-    if not log_file:
-        return []
-    p = Path(log_file)
-    if not p.exists():
-        # Maybe relative to project root
-        p = Path(config_path()).parent / p
-    if not p.exists():
-        return []
-    records: list[dict[str, Any]] = []
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    except OSError:
-        return []
-    return records
-
-
-def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Sum records into a stats bucket."""
-    totals: dict[str, Any] = {
-        "requests": 0,
-        "success": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_tokens": 0,
-        "cache_miss_tokens": 0,
-        "cost": 0.0,
-        "hit_requests": 0,
-    }
-    by_model: dict[str, dict[str, Any]] = {}
-    for r in records:
-        if not isinstance(r, dict):
-            continue
-        key = f"{r.get('provider','')}/{r.get('model','')}".strip("/")
-        totals["requests"] += 1
-        if r.get("success"):
-            totals["success"] += 1
-        totals["input_tokens"] += int(r.get("input_tokens", 0) or 0)
-        totals["output_tokens"] += int(r.get("output_tokens", 0) or 0)
-        totals["cache_read_tokens"] += int(r.get("cache_read_tokens", 0) or 0)
-        totals["cache_miss_tokens"] += int(r.get("cache_miss_tokens", 0) or 0)
-        cost = r.get("cost")
-        if isinstance(cost, (int, float)):
-            totals["cost"] += float(cost)
-        if int(r.get("cache_read_tokens", 0) or 0) > 0:
-            totals["hit_requests"] += 1
-
-        bk = by_model.setdefault(key, {
-            "requests": 0, "success": 0, "input_tokens": 0, "output_tokens": 0,
-            "cache_read_tokens": 0, "cache_miss_tokens": 0, "cost": 0.0, "hit_requests": 0,
-        })
-        bk["requests"] += 1
-        if r.get("success"):
-            bk["success"] += 1
-        bk["input_tokens"] += int(r.get("input_tokens", 0) or 0)
-        bk["output_tokens"] += int(r.get("output_tokens", 0) or 0)
-        bk["cache_read_tokens"] += int(r.get("cache_read_tokens", 0) or 0)
-        bk["cache_miss_tokens"] += int(r.get("cache_miss_tokens", 0) or 0)
-        if isinstance(cost, (int, float)):
-            bk["cost"] += float(cost)
-        if int(r.get("cache_read_tokens", 0) or 0) > 0:
-            bk["hit_requests"] += 1
-
-    totals["cost"] = round(totals["cost"], 6)
-    for bk in by_model.values():
-        bk["cost"] = round(bk["cost"], 6)
-    requests = totals["requests"]
-    hits = totals["hit_requests"]
-    it = totals["input_tokens"]
-    cr = totals["cache_read_tokens"]
-    return {
-        "totals": totals,
-        "cache": {
-            "hit_requests": hits,
-            "hit_rate": round(hits / requests, 4) if requests else 0.0,
-            "cached_token_ratio": round(cr / it, 4) if it else 0.0,
-        },
-        "by_model": by_model,
-    }
-
-
 @app.get("/api/config")
 async def admin_get_config() -> dict[str, Any]:
     """Return raw config.json for dashboard editing."""
@@ -1185,80 +1095,30 @@ async def admin_stats(
     else:
         return JSONResponse(status_code=400, content={"ok": False, "error": "range must be today|yesterday|7d|30d|custom"})
 
-    # Prefer in-memory (via billing module) if available for exact date_keys, else fall back to jsonl.
-    per_day: dict[str, Any] = {}
-    for dk in date_keys:
-        inmem = billing.get_stats(date=dk)
-        # If in-memory has requests, use it. Otherwise load from jsonl.
-        if inmem.get("totals", {}).get("requests", 0) == 0:
-            cfg = load_config().billing
-            records = _load_billing_records(cfg.log_file if cfg else None)
-            day_records = [r for r in records if r.get("date") == dk]
-            per_day[dk] = _aggregate_records(day_records)
-            per_day[dk]["source"] = "jsonl"
-        else:
-            per_day[dk] = {"totals": inmem.get("totals"), "cache": inmem.get("cache"), "by_model": inmem.get("by_model"), "source": "memory"}
-
-    # Build union aggregate from jsonl only for days NOT covered by memory,
-    # to avoid double-counting (record() writes to both jsonl and memory).
-    cfg = load_config().billing
-    all_records = _load_billing_records(cfg.log_file if cfg else None)
-    jsonl_date_keys = {dk for dk in date_keys if per_day[dk].get("source") != "memory"}
-    union_records = [r for r in all_records if r.get("date") in jsonl_date_keys]
-    union = _aggregate_records(union_records)
-    # Merge with memory days for union totals.
-    merged = {
-        "requests": union["totals"]["requests"],
-        "success": union["totals"]["success"],
-        "input_tokens": union["totals"]["input_tokens"],
-        "output_tokens": union["totals"]["output_tokens"],
-        "cache_read_tokens": union["totals"]["cache_read_tokens"],
-        "cache_miss_tokens": union["totals"]["cache_miss_tokens"],
-        "cost": union["totals"]["cost"],
-        "hit_requests": union["totals"]["hit_requests"],
-    }
-    for dk in date_keys:
-        if per_day[dk].get("source") != "memory":
-            continue
-        t = per_day[dk].get("totals") or {}
-        for k in merged:
-            merged[k] += t.get(k, 0)
-    merged["cost"] = round(merged["cost"], 6)
-    requests = merged["requests"]
-    hits = merged["hit_requests"]
-    it = merged["input_tokens"]
-    cr = merged["cache_read_tokens"]
-    total_view = {
-        "totals": merged,
-        "cache": {
-            "hit_requests": hits,
-            "hit_rate": round(hits / requests, 4) if requests else 0.0,
-            "cached_token_ratio": round(cr / it, 4) if it else 0.0,
-        },
-        "by_model": union["by_model"],  # coarse: from jsonl; in-memory by_model is already in per_day.
-    }
-    # Merge memory-day by_model entries into union by_model.
-    for dk in date_keys:
-        if per_day[dk].get("source") != "memory":
-            continue
-        bm = per_day[dk].get("by_model") or {}
-        for key, entry in bm.items():
-            tgt = total_view["by_model"].setdefault(key, {
-                "requests": 0, "success": 0, "input_tokens": 0, "output_tokens": 0,
-                "cache_read_tokens": 0, "cache_miss_tokens": 0, "cost": 0.0, "hit_requests": 0,
-            })
-            for k in tgt:
-                if k == "cost":
-                    tgt[k] = round((tgt[k] or 0.0) + float(entry.get(k, 0) or 0), 6)
-                else:
-                    tgt[k] = (tgt[k] or 0) + int(entry.get(k, 0) or 0)
-
+    # All aggregation now happens in SQLite via billing.get_stats_range.
+    result = billing.get_stats_range(date_keys)
     return {
         "range": range,
         "date_keys": date_keys,
-        "total": total_view,
-        "per_day": per_day,
+        "total": result["total"],
+        "per_day": result["per_day"],
+        "recent": result["recent"],
     }
+
+
+@app.get("/api/stats/recent")
+async def admin_stats_recent(
+    limit: int = 50,
+    date: str | None = None,
+) -> dict[str, Any]:
+    """Return the most recent billing records.
+
+    Args:
+        limit: int - Max records to return (1-500, default 50).
+        date: str | None - Optional Beijing date filter (YYYY-MM-DD).
+    """
+    records = billing.get_recent(limit=limit, date=date)
+    return {"records": records, "total": len(records)}
 
 
 @app.get("/stats")

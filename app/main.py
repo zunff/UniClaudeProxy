@@ -1,16 +1,19 @@
 import json
 import logging
+import shutil
 import time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.config import config_path, load_config, reload_config, resolve_route
+from app.config import config_path, prices_path, load_config, reload_config, resolve_route
 from app import billing
 from app.watcher import ConfigWatcher
 from app.converters.gemini_to_anthropic import (
@@ -754,6 +757,508 @@ async def health_check() -> dict[str, str]:
         dict[str, str] - Health status.
     """
     return {"status": "ok"}
+
+
+# ================= Admin Dashboard API =================
+
+_BEIJING_TZ_ADMIN = timezone(timedelta(hours=8))
+
+
+def _read_raw_config() -> dict[str, Any]:
+    """Read raw config.json from disk as plain dict (for the UI to edit)."""
+    path = Path(config_path())
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_raw_config(raw: dict[str, Any]) -> None:
+    """Atomic write raw config dict back to disk + reload runtime config."""
+    path = Path(config_path())
+    backup = path.with_suffix(".json.bak")
+    # Validate schema first so bad configs never hit disk.
+    AppConfig(**raw)
+    try:
+        shutil.copy2(path, backup)
+    except OSError:
+        pass
+    tmp = path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    tmp.replace(path)
+    reload_config()
+
+
+def _read_raw_prices() -> dict[str, Any]:
+    """Read prices.json from disk as plain dict."""
+    path = Path(prices_path())
+    if not path.exists():
+        return {"prices": {}, "price_bindings": {}}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_raw_prices(raw: dict[str, Any]) -> None:
+    """Atomic write prices.json + reload runtime config."""
+    path = Path(prices_path())
+    backup = path.with_suffix(".json.bak")
+    try:
+        shutil.copy2(path, backup)
+    except OSError:
+        pass
+    tmp = path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    tmp.replace(path)
+    reload_config()
+
+
+def _load_billing_records(log_file: str | None) -> list[dict[str, Any]]:
+    """Load billing JSONL records (for multi-date aggregation in UI)."""
+    if not log_file:
+        return []
+    p = Path(log_file)
+    if not p.exists():
+        # Maybe relative to project root
+        p = Path(config_path()).parent / p
+    if not p.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    return records
+
+
+def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum records into a stats bucket."""
+    totals: dict[str, Any] = {
+        "requests": 0,
+        "success": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_miss_tokens": 0,
+        "cost": 0.0,
+        "hit_requests": 0,
+    }
+    by_model: dict[str, dict[str, Any]] = {}
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        key = f"{r.get('provider','')}/{r.get('model','')}".strip("/")
+        totals["requests"] += 1
+        if r.get("success"):
+            totals["success"] += 1
+        totals["input_tokens"] += int(r.get("input_tokens", 0) or 0)
+        totals["output_tokens"] += int(r.get("output_tokens", 0) or 0)
+        totals["cache_read_tokens"] += int(r.get("cache_read_tokens", 0) or 0)
+        totals["cache_miss_tokens"] += int(r.get("cache_miss_tokens", 0) or 0)
+        cost = r.get("cost")
+        if isinstance(cost, (int, float)):
+            totals["cost"] += float(cost)
+        if int(r.get("cache_read_tokens", 0) or 0) > 0:
+            totals["hit_requests"] += 1
+
+        bk = by_model.setdefault(key, {
+            "requests": 0, "success": 0, "input_tokens": 0, "output_tokens": 0,
+            "cache_read_tokens": 0, "cache_miss_tokens": 0, "cost": 0.0, "hit_requests": 0,
+        })
+        bk["requests"] += 1
+        if r.get("success"):
+            bk["success"] += 1
+        bk["input_tokens"] += int(r.get("input_tokens", 0) or 0)
+        bk["output_tokens"] += int(r.get("output_tokens", 0) or 0)
+        bk["cache_read_tokens"] += int(r.get("cache_read_tokens", 0) or 0)
+        bk["cache_miss_tokens"] += int(r.get("cache_miss_tokens", 0) or 0)
+        if isinstance(cost, (int, float)):
+            bk["cost"] += float(cost)
+        if int(r.get("cache_read_tokens", 0) or 0) > 0:
+            bk["hit_requests"] += 1
+
+    totals["cost"] = round(totals["cost"], 6)
+    for bk in by_model.values():
+        bk["cost"] = round(bk["cost"], 6)
+    requests = totals["requests"]
+    hits = totals["hit_requests"]
+    it = totals["input_tokens"]
+    cr = totals["cache_read_tokens"]
+    return {
+        "totals": totals,
+        "cache": {
+            "hit_requests": hits,
+            "hit_rate": round(hits / requests, 4) if requests else 0.0,
+            "cached_token_ratio": round(cr / it, 4) if it else 0.0,
+        },
+        "by_model": by_model,
+    }
+
+
+@app.get("/api/config")
+async def admin_get_config() -> dict[str, Any]:
+    """Return raw config.json for dashboard editing."""
+    return _read_raw_config()
+
+
+@app.put("/api/config")
+async def admin_put_config(request: Request) -> dict[str, Any]:
+    """Save raw config.json (with validation + backup) and reload runtime."""
+    try:
+        raw = await request.json()
+    except json.JSONDecodeError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"Invalid JSON: {e}"})
+    try:
+        _write_raw_config(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "reloaded": True}
+
+
+@app.get("/api/billing/prices")
+async def admin_get_prices() -> dict[str, Any]:
+    """List named price tables, route bindings, and all available routes."""
+    raw = _read_raw_config()
+    prices_raw = _read_raw_prices()
+    prices = prices_raw.get("prices", {})
+    price_bindings = prices_raw.get("price_bindings", {})
+    models = raw.get("models", {})
+    providers = raw.get("providers", {})
+
+    # Collect all available provider/model_id routes
+    all_routes: list[str] = []
+    for pname, p in (providers or {}).items():
+        for mid in ((p or {}).get("models") or {}).keys():
+            all_routes.append(f"{pname}/{mid}")
+
+    # Reverse map: price_name -> list of route keys bound to it
+    bound_routes: dict[str, list[str]] = {}
+    for route_key, price_name in (price_bindings or {}).items():
+        bound_routes.setdefault(price_name, []).append(route_key)
+
+    # Also compute which claude models use each route (for display)
+    route_to_claude: dict[str, list[str]] = {}
+    for anth_model, mapping in (models or {}).items():
+        if isinstance(mapping, str):
+            rks = [mapping]
+        elif isinstance(mapping, list):
+            rks = list(mapping)
+        elif isinstance(mapping, dict):
+            rks = list(mapping.keys())
+        else:
+            rks = []
+        for rk in rks:
+            route_to_claude.setdefault(rk, []).append(anth_model)
+
+    return {
+        "prices": prices,
+        "price_bindings": price_bindings,
+        "bound_routes": bound_routes,
+        "route_to_claude": route_to_claude,
+        "all_routes": all_routes,
+        "models": models,
+        "providers": providers,
+    }
+
+
+@app.put("/api/billing/prices/{name}")
+async def admin_upsert_price(name: str, request: Request) -> dict[str, Any]:
+    """Create or update a named price table. name = price table ID (e.g. "deepseek-v4-flash")."""
+    try:
+        entry = await request.json()
+    except json.JSONDecodeError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"Invalid JSON: {e}"})
+    raw = _read_raw_prices()
+    raw.setdefault("prices", {})[name] = entry
+    try:
+        _write_raw_prices(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "name": name, "entry": entry}
+
+
+@app.delete("/api/billing/prices/{name}")
+async def admin_delete_price(name: str) -> dict[str, Any]:
+    """Delete a named price table and remove all its route bindings."""
+    raw = _read_raw_prices()
+    prices = raw.get("prices", {})
+    if name not in prices:
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"price table '{name}' not found"})
+    del prices[name]
+    # Remove all bindings pointing to this price table
+    bindings = raw.get("price_bindings", {})
+    to_remove = [k for k, v in bindings.items() if v == name]
+    for k in to_remove:
+        del bindings[k]
+    try:
+        _write_raw_prices(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "deleted": name, "removed_bindings": to_remove}
+
+
+@app.put("/api/billing/bindings/{route_key}")
+async def admin_set_binding(route_key: str, request: Request) -> dict[str, Any]:
+    """Bind a provider/model_id route to a named price table.
+
+    Request body: { "price_name": string }
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"Invalid JSON: {e}"})
+    price_name = body.get("price_name") if isinstance(body, dict) else None
+    if not isinstance(price_name, str) or not price_name:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "price_name required"})
+    if "/" not in route_key:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "route_key must be provider/model_id"})
+    raw = _read_raw_prices()
+    prices = raw.get("prices", {})
+    if price_name not in prices:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"price table '{price_name}' not found"})
+    raw.setdefault("price_bindings", {})[route_key] = price_name
+    try:
+        _write_raw_prices(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "route_key": route_key, "price_name": price_name}
+
+
+@app.delete("/api/billing/bindings/{route_key}")
+async def admin_delete_binding(route_key: str) -> dict[str, Any]:
+    """Remove a route-to-price-table binding."""
+    raw = _read_raw_prices()
+    bindings = raw.get("price_bindings", {})
+    if route_key not in bindings:
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"route '{route_key}' has no binding"})
+    del bindings[route_key]
+    try:
+        _write_raw_prices(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "unbound": route_key}
+
+
+@app.put("/api/models/{claude_model}")
+async def admin_set_model_mapping(claude_model: str, request: Request) -> dict[str, Any]:
+    """Set or update a Claude model → provider route mapping.
+
+    Request body: { "routes": string | string[] | Record<string, number> }
+    - string: single route, e.g. "beyondpower/ds"
+    - string[]: multiple routes (load balanced), e.g. ["gemini/gemini-3.6-flash", "glm-yj/glm-4.7-flash"]
+    - Record<string, number>: weighted routes, e.g. {"beyondpower/ds": 1, "opencode/gpt-5.6-luna": 2}
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"Invalid JSON: {e}"})
+    routes = body.get("routes") if isinstance(body, dict) else None
+    if routes is None:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "routes required"})
+    # Validate routes reference existing providers
+    raw = _read_raw_config()
+    providers = raw.get("providers") or {}
+    route_list = [routes] if isinstance(routes, str) else (
+        list(routes) if isinstance(routes, list) else
+        list(routes.keys()) if isinstance(routes, dict) else []
+    )
+    for r in route_list:
+        if "/" not in r:
+            return JSONResponse(status_code=400, content={"ok": False, "error": f"route '{r}' must be provider/model_id"})
+        pname = r.split("/", 1)[0]
+        if pname not in providers:
+            return JSONResponse(status_code=400, content={"ok": False, "error": f"provider '{pname}' not in config.providers"})
+    raw.setdefault("models", {})[claude_model] = routes
+    try:
+        _write_raw_config(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "claude_model": claude_model, "routes": routes}
+
+
+@app.delete("/api/models/{claude_model}")
+async def admin_delete_model_mapping(claude_model: str) -> dict[str, Any]:
+    """Remove a Claude model mapping."""
+    raw = _read_raw_config()
+    models = raw.get("models") or {}
+    if claude_model not in models:
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"model '{claude_model}' not found"})
+    del models[claude_model]
+    try:
+        _write_raw_config(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "deleted": claude_model}
+
+
+@app.put("/api/providers/{provider_name}/models/{model_id}")
+async def admin_upsert_provider_model(provider_name: str, model_id: str, request: Request) -> dict[str, Any]:
+    """Add or update a model entry under a provider."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"Invalid JSON: {e}"})
+    raw = _read_raw_config()
+    providers = raw.get("providers") or {}
+    if provider_name not in providers:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"provider '{provider_name}' not found"})
+    models = providers[provider_name].setdefault("models", {})
+    models[model_id] = body
+    try:
+        _write_raw_config(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "provider": provider_name, "model_id": model_id, "config": body}
+
+
+@app.delete("/api/providers/{provider_name}/models/{model_id}")
+async def admin_delete_provider_model(provider_name: str, model_id: str) -> dict[str, Any]:
+    """Remove a model entry from a provider."""
+    raw = _read_raw_config()
+    providers = raw.get("providers") or {}
+    if provider_name not in providers:
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"provider '{provider_name}' not found"})
+    models = providers[provider_name].get("models") or {}
+    if model_id not in models:
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"model '{model_id}' not found under '{provider_name}'"})
+    del models[model_id]
+    try:
+        _write_raw_config(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "deleted": f"{provider_name}/{model_id}"}
+
+
+def _date_keys_in_range(days: int) -> list[str]:
+    now = datetime.now(_BEIJING_TZ_ADMIN)
+    return [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)][::-1]
+
+
+@app.get("/api/stats")
+async def admin_stats(
+    range: str = "today",
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict[str, Any]:
+    """Billing stats with pre-defined time dimensions.
+
+    Args:
+        range: str - One of today|yesterday|7d|30d|custom.
+        start_date, end_date: str - Required only for range=custom (YYYY-MM-DD inclusive).
+    """
+    now = datetime.now(_BEIJING_TZ_ADMIN)
+    today_str = now.strftime("%Y-%m-%d")
+    yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    if range == "today":
+        date_keys = [today_str]
+    elif range == "yesterday":
+        date_keys = [yesterday_str]
+    elif range == "7d":
+        date_keys = _date_keys_in_range(7)
+    elif range == "30d":
+        date_keys = _date_keys_in_range(30)
+    elif range == "custom":
+        if not start_date or not end_date:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "start_date and end_date required for range=custom"})
+        try:
+            d0 = datetime.strptime(start_date, "%Y-%m-%d").date()
+            d1 = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "invalid date format, use YYYY-MM-DD"})
+        if d0 > d1:
+            d0, d1 = d1, d0
+        date_keys = []
+        cur = d0
+        while cur <= d1:
+            date_keys.append(cur.strftime("%Y-%m-%d"))
+            cur += timedelta(days=1)
+    else:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "range must be today|yesterday|7d|30d|custom"})
+
+    # Prefer in-memory (via billing module) if available for exact date_keys, else fall back to jsonl.
+    per_day: dict[str, Any] = {}
+    for dk in date_keys:
+        inmem = billing.get_stats(date=dk)
+        # If in-memory has requests, use it. Otherwise load from jsonl.
+        if inmem.get("totals", {}).get("requests", 0) == 0:
+            cfg = load_config().billing
+            records = _load_billing_records(cfg.log_file if cfg else None)
+            day_records = [r for r in records if r.get("date") == dk]
+            per_day[dk] = _aggregate_records(day_records)
+            per_day[dk]["source"] = "jsonl"
+        else:
+            per_day[dk] = {"totals": inmem.get("totals"), "cache": inmem.get("cache"), "by_model": inmem.get("by_model"), "source": "memory"}
+
+    # Build union aggregate from jsonl only for days NOT covered by memory,
+    # to avoid double-counting (record() writes to both jsonl and memory).
+    cfg = load_config().billing
+    all_records = _load_billing_records(cfg.log_file if cfg else None)
+    jsonl_date_keys = {dk for dk in date_keys if per_day[dk].get("source") != "memory"}
+    union_records = [r for r in all_records if r.get("date") in jsonl_date_keys]
+    union = _aggregate_records(union_records)
+    # Merge with memory days for union totals.
+    merged = {
+        "requests": union["totals"]["requests"],
+        "success": union["totals"]["success"],
+        "input_tokens": union["totals"]["input_tokens"],
+        "output_tokens": union["totals"]["output_tokens"],
+        "cache_read_tokens": union["totals"]["cache_read_tokens"],
+        "cache_miss_tokens": union["totals"]["cache_miss_tokens"],
+        "cost": union["totals"]["cost"],
+        "hit_requests": union["totals"]["hit_requests"],
+    }
+    for dk in date_keys:
+        if per_day[dk].get("source") != "memory":
+            continue
+        t = per_day[dk].get("totals") or {}
+        for k in merged:
+            merged[k] += t.get(k, 0)
+    merged["cost"] = round(merged["cost"], 6)
+    requests = merged["requests"]
+    hits = merged["hit_requests"]
+    it = merged["input_tokens"]
+    cr = merged["cache_read_tokens"]
+    total_view = {
+        "totals": merged,
+        "cache": {
+            "hit_requests": hits,
+            "hit_rate": round(hits / requests, 4) if requests else 0.0,
+            "cached_token_ratio": round(cr / it, 4) if it else 0.0,
+        },
+        "by_model": union["by_model"],  # coarse: from jsonl; in-memory by_model is already in per_day.
+    }
+    # Merge memory-day by_model entries into union by_model.
+    for dk in date_keys:
+        if per_day[dk].get("source") != "memory":
+            continue
+        bm = per_day[dk].get("by_model") or {}
+        for key, entry in bm.items():
+            tgt = total_view["by_model"].setdefault(key, {
+                "requests": 0, "success": 0, "input_tokens": 0, "output_tokens": 0,
+                "cache_read_tokens": 0, "cache_miss_tokens": 0, "cost": 0.0, "hit_requests": 0,
+            })
+            for k in tgt:
+                if k == "cost":
+                    tgt[k] = round((tgt[k] or 0.0) + float(entry.get(k, 0) or 0), 6)
+                else:
+                    tgt[k] = (tgt[k] or 0) + int(entry.get(k, 0) or 0)
+
+    return {
+        "range": range,
+        "date_keys": date_keys,
+        "total": total_view,
+        "per_day": per_day,
+    }
 
 
 @app.get("/stats")

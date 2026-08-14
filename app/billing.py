@@ -109,11 +109,23 @@ def _compute_cost(
     input_tokens: int,
     output_tokens: int,
     cache_read: int,
+    bindings: Optional[dict[str, str]] = None,
 ) -> tuple[Optional[float], Optional[str]]:
-    """Compute cost (per 1M tokens) for a route, respecting peak/off-peak."""
+    """Compute cost (per 1M tokens) for a route, respecting peak/off-peak.
+
+    Lookup order:
+    1. If bindings map route key -> price name, use prices[price_name]
+    2. Fallback: direct lookup prices[key] (backward compat)
+    """
     if not prices:
         return None, None
-    entry = prices.get(key)
+    # Resolve price table name via bindings, fallback to direct key
+    price_name = None
+    if bindings:
+        price_name = bindings.get(key)
+    if not price_name:
+        price_name = key  # backward compat: route key IS the price key
+    entry = prices.get(price_name)
     if not entry:
         return None, None
     currency = entry.get("currency")
@@ -172,6 +184,7 @@ def record(
         cfg = _billing_config()
         log_file = (cfg.log_file if cfg and cfg.log_file else "logs/billing.jsonl")
         prices = cfg.prices if cfg else {}
+        bindings = cfg.price_bindings if cfg else None
 
         u = usage or {}
         input_tokens = int(u.get("input_tokens", 0) or 0)
@@ -183,7 +196,7 @@ def record(
         provider_name = getattr(route, "provider_name", "") or ""
         model_id = getattr(route, "model_id", "") or ""
         key = f"{provider_name}/{model_id}" if provider_name else model_id
-        cost, currency = _compute_cost(prices, key, input_tokens, output_tokens, cache_read)
+        cost, currency = _compute_cost(prices, key, input_tokens, output_tokens, cache_read, bindings)
 
         now_bj = datetime.now(_BEIJING_TZ)
         rec = {

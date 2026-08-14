@@ -12,7 +12,14 @@ venv/
 .venv/
 env/
 
+# config.json contains API keys — DO NOT commit
 config.json
+# Backup/temp files from atomic writes
+*.json.bak
+*.json.tmp
+
+# Runtime logs and billing data
+logs/
 debug.log
 *.log
 
@@ -27,3 +34,9 @@ debug.log
 
 .DS_Store
 Thumbs.db
+
+# Frontend build artifacts
+admin-dashboard/node_modules/
+admin-dashboard/dist/
+admin-dashboard/tsconfig.tsbuildinfo
+admin-dashboard/.npm-cache/

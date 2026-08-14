@@ -127,14 +127,18 @@ class BillingConfig(BaseModel):
     Attributes:
         enabled: bool - Master switch. When False, all billing logic is skipped.
         log_file: str - Append-only JSONL path for per-request billing records.
-        prices: dict - Price table keyed by "provider/model_id". Each entry may
-            carry peak/offpeak tiers (per 1M tokens, CNY) plus peak_hours (Beijing
-            time). Routes without an entry record token usage but cost=None.
+        prices: dict - Named price tables (key = price name, e.g.
+            "deepseek-v4-flash"). Each entry may carry peak/offpeak tiers
+            (per 1M tokens, CNY) plus peak_hours (Beijing time).
+        price_bindings: dict - Maps "provider/model_id" route keys to price
+            table names. Multiple routes can share the same price table.
+            Routes without a binding record token usage but cost=None.
     """
 
     enabled: bool = False
     log_file: str = "logs/billing.jsonl"
     prices: dict[str, Any] = Field(default_factory=dict)
+    price_bindings: dict[str, str] = Field(default_factory=dict)
 
 
 class AppConfig(BaseModel):
@@ -256,6 +260,27 @@ def config_path() -> str:
     return _config_path or str(Path(__file__).parent.parent / "config.json")
 
 
+def prices_path() -> str:
+    """Return the resolved path to prices.json (separate from config.json)."""
+    return str(Path(__file__).parent.parent / "prices.json")
+
+
+def _load_prices_file() -> dict[str, Any]:
+    """Load prices.json if it exists, return dict with 'prices' and 'price_bindings' keys."""
+    p = Path(prices_path())
+    if not p.exists():
+        return {"prices": {}, "price_bindings": {}}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {
+            "prices": data.get("prices", {}),
+            "price_bindings": data.get("price_bindings", {}),
+        }
+    except (json.JSONDecodeError, OSError):
+        return {"prices": {}, "price_bindings": {}}
+
+
 def load_config(path: Optional[str] = None) -> AppConfig:
     """Load and parse the application configuration from disk.
 
@@ -276,6 +301,13 @@ def load_config(path: Optional[str] = None) -> AppConfig:
 
     with open(path, "r", encoding="utf-8") as f:
         raw: dict[str, Any] = json.load(f)
+
+    # Merge prices from separate prices.json into billing config
+    prices_data = _load_prices_file()
+    billing = raw.get("billing", {})
+    billing["prices"] = prices_data["prices"]
+    billing["price_bindings"] = prices_data["price_bindings"]
+    raw["billing"] = billing
 
     _config = AppConfig(**raw)
     return _config

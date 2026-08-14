@@ -175,40 +175,55 @@ function MappingEditDialog({
           <div>
             <Label>已选路由</Label>
             <div className="mt-1 space-y-1.5 min-h-[2rem]">
-              {currentRoutes.length === 0 ? (
-                <div className="text-xs text-slate-500 py-2">尚未选择路由</div>
+              {mode === "single" ? (
+                <select
+                  className="w-full h-9 rounded-md border border-brand-borderSubtle bg-slate-950/40 px-3 py-1 text-sm text-slate-200 font-mono"
+                  value={selected}
+                  onChange={(e) => setSelected(e.target.value)}
+                >
+                  <option value="">— 选择 provider/model_id —</option>
+                  {availableRoutes.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
               ) : (
-                currentRoutes.map((r) => (
-                  <div
-                    key={r}
-                    className="flex items-center justify-between p-2 rounded-md bg-slate-900/40 border border-brand-borderSubtle"
-                  >
-                    <span className="text-sm font-mono text-slate-200">{r}</span>
-                    {mode === "weighted" && (
-                      <input
-                        type="number"
-                        value={weights[r] ?? 1}
-                        onChange={(e) =>
-                          setWeights({ ...weights, [r]: Number(e.target.value) })
-                        }
-                        className="w-16 h-7 rounded border border-brand-borderSubtle bg-slate-950/40 px-2 text-xs text-slate-200 text-right"
-                      />
-                    )}
-                    {mode !== "single" && (
-                      <button
-                        onClick={() => removeRoute(r)}
-                        className="text-slate-500 hover:text-rose-400"
+                <>
+                  {currentRoutes.length === 0 ? (
+                    <div className="text-xs text-slate-500 py-2">尚未选择路由</div>
+                  ) : (
+                    currentRoutes.map((r) => (
+                      <div
+                        key={r}
+                        className="flex items-center justify-between p-2 rounded-md bg-slate-900/40 border border-brand-borderSubtle"
                       >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-                ))
+                        <span className="text-sm font-mono text-slate-200">{r}</span>
+                        {mode === "weighted" && (
+                          <input
+                            type="number"
+                            value={weights[r] ?? 1}
+                            onChange={(e) =>
+                              setWeights({ ...weights, [r]: Number(e.target.value) })
+                            }
+                            className="w-16 h-7 rounded border border-brand-borderSubtle bg-slate-950/40 px-2 text-xs text-slate-200 text-right"
+                          />
+                        )}
+                        <button
+                          onClick={() => removeRoute(r)}
+                          className="text-slate-500 hover:text-rose-400"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </>
               )}
             </div>
           </div>
 
-          {unusedRoutes.length > 0 && (
+          {mode !== "single" && unusedRoutes.length > 0 && (
             <div>
               <Label>添加路由</Label>
               <div className="flex gap-2 mt-1">

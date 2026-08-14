@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.config import config_path, prices_path, load_config, reload_config, resolve_route
+from app.config import AppConfig, config_path, prices_path, load_config, reload_config, resolve_route
 from app import billing
 from app.watcher import ConfigWatcher
 from app.converters.gemini_to_anthropic import (

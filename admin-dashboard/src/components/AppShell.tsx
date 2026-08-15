@@ -83,7 +83,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="absolute bottom-5 left-3 right-3">
             <div className="px-3 py-2 text-xs text-slate-500 flex items-center gap-2 leading-snug">
               <Settings className="w-3.5 h-3.5 shrink-0" />
-              <span>读写 config.json · 热重载配置</span>
+              <span>读写 global.json / config.json · 热重载</span>
             </div>
           </div>
         </aside>

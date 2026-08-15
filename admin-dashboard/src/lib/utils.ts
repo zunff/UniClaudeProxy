@@ -22,6 +22,20 @@ export function formatMoney(n: number | null | undefined, currency = "CNY"): str
   }).format(n);
 }
 
+export const DEFAULT_FX_TO_CNY: Record<string, number> = { USD: 7.2 };
+
+export function toCny(
+  amount: number,
+  currency?: string | null,
+  fxToCny?: Record<string, number> | null,
+): number {
+  const code = (currency || "CNY").toUpperCase();
+  if (code === "CNY") return amount;
+  const rate = fxToCny?.[code] ?? DEFAULT_FX_TO_CNY[code];
+  if (rate == null) return amount;
+  return amount * rate;
+}
+
 export function formatShort(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return "0";
   const abs = Math.abs(n);

@@ -31,7 +31,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { cn, formatMoney } from "@/lib/utils";
+import { cn, formatMoney, toCny, DEFAULT_FX_TO_CNY } from "@/lib/utils";
 
 function normalizeEntry(entry?: PriceTableEntry | null) {
   if (!entry) {
@@ -69,16 +69,42 @@ function normalizeEntry(entry?: PriceTableEntry | null) {
   };
 }
 
+function UnitCell({
+  value,
+  currency,
+  fxToCny,
+  className,
+}: {
+  value: number;
+  currency: string;
+  fxToCny: Record<string, number>;
+  className?: string;
+}) {
+  const isForeign = currency.toUpperCase() !== "CNY";
+  return (
+    <td className={cn("px-3 py-2 text-right tabular-nums", className)}>
+      <div>{formatMoney(toCny(value, currency, fxToCny), "CNY")}</div>
+      {isForeign && (
+        <div className="text-[10px] font-normal text-slate-500">
+          {formatMoney(value, currency)}
+        </div>
+      )}
+    </td>
+  );
+}
+
 function PriceForm({
   initialName,
   initialEntry,
   existingNames,
+  fxToCny,
   onSubmit,
   onCancel,
 }: {
   initialName: string;
   initialEntry: PriceTableEntry | null;
   existingNames: string[];
+  fxToCny: Record<string, number>;
   onSubmit: (name: string, entry: PriceTableEntry) => void;
   onCancel: () => void;
 }) {
@@ -86,7 +112,9 @@ function PriceForm({
   const norm = normalizeEntry(initialEntry);
   const [currency, setCurrency] = useState(norm.currency);
   const [displayName, setDisplayName] = useState(norm.displayName);
-  const [peakHours, setPeakHours] = useState(norm.peakHours || "9-12, 14-18");
+  const [peakHours, setPeakHours] = useState(
+    initialName ? norm.peakHours : norm.peakHours || "9-12, 14-18",
+  );
   const [peak, setPeak] = useState({
     input: norm.peak.input,
     cached: norm.peak.cached,
@@ -136,6 +164,8 @@ function PriceForm({
     Math.abs(peak.output - offpeak.output) < 1e-9;
 
   const perReqSample = (1000 * 0.8 * peak.cached + 1000 * 0.2 * peak.input + 500 * peak.output) / 1e6;
+  const perReqCny = toCny(perReqSample, currency, fxToCny);
+  const isForeign = currency.toUpperCase() !== "CNY";
 
   return (
     <div className="grid gap-5">
@@ -151,8 +181,16 @@ function PriceForm({
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <Label>币种</Label>
-            <Input value={currency} onChange={(e) => setCurrency(e.target.value)} />
+            <Label>币种（官网标价）</Label>
+            <SelectField
+              value={currency}
+              onValueChange={setCurrency}
+              placeholder="选择币种"
+              options={[
+                { value: "CNY", label: "CNY 人民币" },
+                { value: "USD", label: "USD 美元" },
+              ]}
+            />
           </div>
           <div>
             <Label>备注 / 模型名</Label>
@@ -247,8 +285,14 @@ function PriceForm({
         <div>
           <span className="text-slate-300">示例估算</span>：1K input (80%命中) + 500 output ≈{" "}
           <span className="text-brand-cyan font-semibold">
-            {formatMoney(perReqSample, currency)}
+            {formatMoney(perReqCny, "CNY")}
           </span>
+          {isForeign && (
+            <span className="text-slate-500">
+              {" "}
+              （官网 {formatMoney(perReqSample, currency)}）
+            </span>
+          )}
         </div>
         <div>
           {isSame ? (
@@ -282,15 +326,22 @@ export default function PricesPage() {
     deletePrice,
     setBinding,
     deleteBinding,
+    setFxToCny,
     loading,
   } = useAdmin();
   const [query, setQuery] = useState("");
   const [bindTarget, setBindTarget] = useState<string | null>(null);
   const [bindRoute, setBindRoute] = useState("");
+  const fxToCny = pricesResp?.fx_to_cny ?? DEFAULT_FX_TO_CNY;
+  const [fxDraft, setFxDraft] = useState(String(fxToCny.USD ?? DEFAULT_FX_TO_CNY.USD));
 
   useEffect(() => {
     fetchPrices();
   }, [fetchPrices]);
+
+  useEffect(() => {
+    setFxDraft(String(fxToCny.USD ?? DEFAULT_FX_TO_CNY.USD));
+  }, [fxToCny.USD]);
 
   const list = useMemo(() => {
     const prices = pricesResp?.prices || {};
@@ -334,10 +385,30 @@ export default function PricesPage() {
             价格表
           </h1>
           <p className="text-sm text-slate-400 mt-1">
-            命名价格表，多个路由可共享同一张价格表。
+            官网原币写入，展示与记账统一折算为人民币。
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">
+              USD→CNY
+            </span>
+            <Input
+              className="w-[8.5rem] pl-[4.75rem] tabular-nums"
+              value={fxDraft}
+              onChange={(e) => setFxDraft(e.target.value)}
+              onBlur={async () => {
+                const n = Number(fxDraft);
+                if (!Number.isFinite(n) || n <= 0) {
+                  setFxDraft(String(fxToCny.USD ?? DEFAULT_FX_TO_CNY.USD));
+                  return;
+                }
+                if (n !== (fxToCny.USD ?? DEFAULT_FX_TO_CNY.USD)) {
+                  await setFxToCny({ ...fxToCny, USD: n });
+                }
+              }}
+            />
+          </div>
           <div className="relative w-72">
             <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
             <Input
@@ -368,6 +439,7 @@ export default function PricesPage() {
                 initialName=""
                 initialEntry={null}
                 existingNames={Object.keys(pricesResp?.prices || {})}
+                fxToCny={fxToCny}
                 onCancel={() => {}}
                 onSubmit={async (n, e) => {
                   const ok = await upsertPrice(n, e);
@@ -407,7 +479,9 @@ export default function PricesPage() {
                         )}
                       </CardTitle>
                       <CardDescription className="mt-1">
-                        {n.displayName || "未命名"} · {n.currency} · 高峰 {n.peakHours || "未设置"}
+                        {n.displayName || "未命名"} · 展示 CNY
+                        {n.currency.toUpperCase() !== "CNY" && ` · 官网 ${n.currency}`}
+                        {n.peakHours ? ` · 高峰 ${n.peakHours}` : ""}
                       </CardDescription>
                     </div>
                     <div className="flex gap-1">
@@ -428,6 +502,7 @@ export default function PricesPage() {
                             initialName={name}
                             initialEntry={entry}
                             existingNames={Object.keys(pricesResp?.prices || {})}
+                            fxToCny={fxToCny}
                             onCancel={() => {}}
                             onSubmit={async (n2, e2) => {
                               await upsertPrice(n2, e2);
@@ -453,7 +528,7 @@ export default function PricesPage() {
                     <table className="w-full">
                       <thead>
                         <tr className="text-slate-400 bg-slate-900/50">
-                          <th className="px-3 py-2.5 text-left font-medium">单价 / 百万 token</th>
+                          <th className="px-3 py-2.5 text-left font-medium">单价 / 百万 token（CNY）</th>
                           <th className="px-3 py-2.5 text-right font-medium text-brand-amber">高峰</th>
                           <th className="px-3 py-2.5 text-right font-medium text-brand-cyan">闲时</th>
                         </tr>
@@ -461,18 +536,18 @@ export default function PricesPage() {
                       <tbody className="tabular-nums">
                         <tr className="border-t border-brand-borderSubtle/60">
                           <td className="px-3 py-2 text-slate-300">输入</td>
-                          <td className="px-3 py-2 text-right text-brand-amber">{n.peak.input}</td>
-                          <td className="px-3 py-2 text-right text-brand-cyan">{n.offpeak.input}</td>
+                          <UnitCell value={n.peak.input} currency={n.currency} fxToCny={fxToCny} className="text-brand-amber" />
+                          <UnitCell value={n.offpeak.input} currency={n.currency} fxToCny={fxToCny} className="text-brand-cyan" />
                         </tr>
                         <tr className="border-t border-brand-borderSubtle/60">
                           <td className="px-3 py-2 text-slate-300">缓存命中</td>
-                          <td className="px-3 py-2 text-right text-brand-amber">{n.peak.cached}</td>
-                          <td className="px-3 py-2 text-right text-brand-cyan">{n.offpeak.cached}</td>
+                          <UnitCell value={n.peak.cached} currency={n.currency} fxToCny={fxToCny} className="text-brand-amber" />
+                          <UnitCell value={n.offpeak.cached} currency={n.currency} fxToCny={fxToCny} className="text-brand-cyan" />
                         </tr>
                         <tr className="border-t border-brand-borderSubtle/60">
                           <td className="px-3 py-2 text-slate-300">输出</td>
-                          <td className="px-3 py-2 text-right text-brand-amber">{n.peak.output}</td>
-                          <td className="px-3 py-2 text-right text-brand-cyan">{n.offpeak.output}</td>
+                          <UnitCell value={n.peak.output} currency={n.currency} fxToCny={fxToCny} className="text-brand-amber" />
+                          <UnitCell value={n.offpeak.output} currency={n.currency} fxToCny={fxToCny} className="text-brand-cyan" />
                         </tr>
                       </tbody>
                     </table>

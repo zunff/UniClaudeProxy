@@ -32,6 +32,7 @@ debug.log
 *.swp
 *.swo
 *~
+.codegraph/
 
 .DS_Store
 Thumbs.db

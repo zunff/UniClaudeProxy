@@ -47,6 +47,7 @@ export interface PriceTier {
 export interface PricesResponse {
   prices: Record<string, PriceTableEntry>;
   price_bindings: Record<string, string>; // route_key -> price_name
+  fx_to_cny?: Record<string, number>;
   bound_routes: Record<string, string[]>; // price_name -> [route_keys]
   route_to_claude: Record<string, string[]>; // route_key -> [claude_models]
   all_routes: string[];
@@ -123,6 +124,7 @@ interface AdminState {
   deletePrice: (name: string) => Promise<boolean>;
   setBinding: (routeKey: string, priceName: string) => Promise<boolean>;
   deleteBinding: (routeKey: string) => Promise<boolean>;
+  setFxToCny: (fx: Record<string, number>) => Promise<boolean>;
 
   setModelMapping: (claudeModel: string, routes: ModelRoute) => Promise<boolean>;
   deleteModelMapping: (claudeModel: string) => Promise<boolean>;
@@ -272,6 +274,21 @@ export const useAdmin = create<AdminState>((set, get) => ({
       return true;
     } catch (e: any) {
       toast.error("解绑失败", { description: e?.message });
+      return false;
+    }
+  },
+
+  setFxToCny: async (fx) => {
+    try {
+      await http<{ ok: boolean }>("/api/billing/fx", {
+        method: "PUT",
+        body: JSON.stringify(fx),
+      });
+      toast.success("汇率已更新");
+      await get().fetchPrices();
+      return true;
+    } catch (e: any) {
+      toast.error("汇率保存失败", { description: e?.message });
       return false;
     }
   },

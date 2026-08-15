@@ -728,8 +728,10 @@ export default function ModelsPage() {
             模型配置
           </h1>
           <p className="text-sm text-slate-400 mt-1">
-            Provider 列表、模型定义与服务器参数。所有修改直接写入{" "}
-            <code className="text-brand-cyan">config.json</code>。
+            Provider 列表、模型定义与服务器参数。模型相关写入{" "}
+            <code className="text-brand-cyan">config.json</code>
+            ，超时/计费等写入{" "}
+            <code className="text-brand-cyan">global.json</code>。
           </p>
         </div>
         <div className="flex items-center gap-3">

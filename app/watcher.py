@@ -12,20 +12,18 @@ class _ConfigReloadHandler(FileSystemEventHandler):
     """Handles config file modification events and triggers reload callback.
 
     Attributes:
-        config_path: Path - Resolved path to the config file.
-        config_name: str - Filename of the config file.
+        watched_names: set[str] - Filenames that should trigger reload.
         callback: callable - Function to invoke on config change.
     """
 
-    def __init__(self, config_path: str, callback):
+    def __init__(self, watched_names: set[str], callback):
         """Initialize the handler.
 
         Args:
-            config_path: str - Path to the config file to watch.
+            watched_names: set[str] - Filenames to watch (e.g. config.json).
             callback: callable - Reload callback function.
         """
-        self.config_path = Path(config_path).resolve()
-        self.config_name = self.config_path.name
+        self.watched_names = watched_names
         self.callback = callback
         self._lock = threading.Lock()
 
@@ -39,9 +37,9 @@ class _ConfigReloadHandler(FileSystemEventHandler):
             return
 
         event_path = Path(event.src_path).resolve()
-        if event_path.name == self.config_name:
+        if event_path.name in self.watched_names:
             with self._lock:
-                logger.info("Config file changed: %s", self.config_name)
+                logger.info("Config file changed: %s", event_path.name)
                 try:
                     self.callback()
                     logger.info("Config reloaded successfully")
@@ -50,32 +48,37 @@ class _ConfigReloadHandler(FileSystemEventHandler):
 
 
 class ConfigWatcher:
-    """Watches config.json for changes and triggers hot reload.
+    """Watches config JSON files for changes and triggers hot reload.
 
     Attributes:
-        config_path: Path - Resolved path to the config file.
+        paths: list[Path] - Resolved paths to watch.
         callback: callable - Function to invoke on config change.
         observer: Observer | None - The watchdog observer instance.
     """
 
-    def __init__(self, config_path: str, callback):
+    def __init__(self, config_path: str | list[str], callback):
         """Initialize the watcher.
 
         Args:
-            config_path: str - Path to the config file to watch.
+            config_path: str | list[str] - Path(s) to watch.
             callback: callable - Function to call when config changes.
         """
-        self.config_path = Path(config_path).resolve()
+        raw = [config_path] if isinstance(config_path, str) else list(config_path)
+        self.paths = [Path(p).resolve() for p in raw]
         self.callback = callback
         self.observer = None
 
     def start(self):
-        """Start watching the config file for modifications."""
-        handler = _ConfigReloadHandler(str(self.config_path), self.callback)
+        """Start watching the config file(s) for modifications."""
+        names = {p.name for p in self.paths}
+        handler = _ConfigReloadHandler(names, self.callback)
         self.observer = Observer()
-        self.observer.schedule(handler, str(self.config_path.parent), recursive=False)
+        parents = {str(p.parent) for p in self.paths}
+        for parent in parents:
+            self.observer.schedule(handler, parent, recursive=False)
         self.observer.start()
-        logger.info("Watching config: %s", self.config_path)
+        for p in self.paths:
+            logger.info("Watching config: %s", p)
 
     def stop(self):
         """Stop watching the config file."""

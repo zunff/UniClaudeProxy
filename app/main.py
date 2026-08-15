@@ -13,7 +13,17 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.config import AppConfig, config_path, prices_path, load_config, reload_config, resolve_route
+from app.config import (
+    AppConfig,
+    config_path,
+    global_path,
+    prices_path,
+    load_config,
+    reload_config,
+    resolve_route,
+    merge_config_files,
+    split_config_files,
+)
 from app import billing
 from app.watcher import ConfigWatcher
 from app.converters.gemini_to_anthropic import (
@@ -65,7 +75,7 @@ async def lifespan(app: FastAPI):
         new_cfg = reload_config()
         logger.info("Hot-reloaded model mappings: %s", json.dumps(new_cfg.models, indent=2))
 
-    watcher = ConfigWatcher(config_path(), _on_config_change)
+    watcher = ConfigWatcher([config_path(), global_path()], _on_config_change)
     watcher.start()
 
     yield
@@ -764,28 +774,47 @@ async def health_check() -> dict[str, str]:
 _BEIJING_TZ_ADMIN = timezone(timedelta(hours=8))
 
 
-def _read_raw_config() -> dict[str, Any]:
-    """Read raw config.json from disk as plain dict (for the UI to edit)."""
-    path = Path(config_path())
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _write_raw_config(raw: dict[str, Any]) -> None:
-    """Atomic write raw config dict back to disk + reload runtime config."""
-    path = Path(config_path())
-    backup = path.with_suffix(".json.bak")
-    # Validate schema first so bad configs never hit disk.
-    AppConfig(**raw)
-    try:
-        shutil.copy2(path, backup)
-    except OSError:
-        pass
-    tmp = path.with_suffix(".json.tmp")
+def _atomic_write_json(path: Path, raw: dict[str, Any]) -> None:
+    """Atomic write a JSON object, keeping a .bak of the previous file."""
+    backup = path.with_suffix(path.suffix + ".bak")
+    if path.exists():
+        try:
+            shutil.copy2(path, backup)
+        except OSError:
+            pass
+    tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(raw, f, ensure_ascii=False, indent=2)
         f.write("\n")
     tmp.replace(path)
+
+
+def _read_raw_config() -> dict[str, Any]:
+    """Read merged global.json + config.json for the dashboard."""
+    cfg = Path(config_path())
+    local_raw: dict[str, Any] = {}
+    if cfg.exists():
+        with open(cfg, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                local_raw = data
+    gpath = Path(global_path())
+    global_raw: dict[str, Any] = {}
+    if gpath.exists():
+        with open(gpath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                global_raw = data
+    return merge_config_files(global_raw, local_raw)
+
+
+def _write_raw_config(raw: dict[str, Any]) -> None:
+    """Split merged config into global.json + config.json, then reload."""
+    # Validate the merged view so neither file can be written in a broken state.
+    AppConfig(**raw)
+    global_out, local_out = split_config_files(raw)
+    _atomic_write_json(Path(global_path()), global_out)
+    _atomic_write_json(Path(config_path()), local_out)
     reload_config()
 
 
@@ -793,30 +822,20 @@ def _read_raw_prices() -> dict[str, Any]:
     """Read prices.json from disk as plain dict."""
     path = Path(prices_path())
     if not path.exists():
-        return {"prices": {}, "price_bindings": {}}
+        return {"prices": {}, "price_bindings": {}, "fx_to_cny": {}}
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def _write_raw_prices(raw: dict[str, Any]) -> None:
     """Atomic write prices.json + reload runtime config."""
-    path = Path(prices_path())
-    backup = path.with_suffix(".json.bak")
-    try:
-        shutil.copy2(path, backup)
-    except OSError:
-        pass
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(raw, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    tmp.replace(path)
+    _atomic_write_json(Path(prices_path()), raw)
     reload_config()
 
 
 @app.get("/api/config")
 async def admin_get_config() -> dict[str, Any]:
-    """Return raw config.json for dashboard editing."""
+    """Return raw merged config (global.json + config.json) for dashboard editing."""
     return _read_raw_config()
 
 
@@ -841,6 +860,7 @@ async def admin_get_prices() -> dict[str, Any]:
     prices_raw = _read_raw_prices()
     prices = prices_raw.get("prices", {})
     price_bindings = prices_raw.get("price_bindings", {})
+    fx_to_cny = prices_raw.get("fx_to_cny") or {}
     models = raw.get("models", {})
     providers = raw.get("providers", {})
 
@@ -872,6 +892,7 @@ async def admin_get_prices() -> dict[str, Any]:
     return {
         "prices": prices,
         "price_bindings": price_bindings,
+        "fx_to_cny": {str(k).upper(): float(v) for k, v in fx_to_cny.items() if v is not None},
         "bound_routes": bound_routes,
         "route_to_claude": route_to_claude,
         "all_routes": all_routes,
@@ -958,13 +979,43 @@ async def admin_delete_binding(route_key: str) -> dict[str, Any]:
     return {"ok": True, "unbound": route_key}
 
 
+@app.put("/api/billing/fx")
+async def admin_set_fx(request: Request) -> dict[str, Any]:
+    """Update FX rates used to convert official (non-CNY) prices into CNY.
+
+    Request body: { "USD": 7.2, ... }
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"Invalid JSON: {e}"})
+    if not isinstance(body, dict) or not body:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "fx map required"})
+    fx: dict[str, float] = {}
+    for k, v in body.items():
+        try:
+            rate = float(v)
+        except (TypeError, ValueError):
+            return JSONResponse(status_code=400, content={"ok": False, "error": f"invalid rate for {k}"})
+        if rate <= 0:
+            return JSONResponse(status_code=400, content={"ok": False, "error": f"rate for {k} must be > 0"})
+        fx[str(k).upper()] = rate
+    raw = _read_raw_prices()
+    raw["fx_to_cny"] = fx
+    try:
+        _write_raw_prices(raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "fx_to_cny": fx}
+
+
 @app.put("/api/models/{claude_model}")
 async def admin_set_model_mapping(claude_model: str, request: Request) -> dict[str, Any]:
     """Set or update a Claude model → provider route mapping.
 
     Request body: { "routes": string | string[] | Record<string, number> }
     - string: single route, e.g. "beyondpower/ds"
-    - string[]: multiple routes (load balanced), e.g. ["gemini/gemini-3.6-flash", "glm-yj/glm-4.7-flash"]
+    - string[]: multiple routes (load balanced), e.g. ["gemini/gemini-3.7-flash", "glm-yj/glm-4.7-flash"]
     - Record<string, number>: weighted routes, e.g. {"beyondpower/ds": 1, "opencode/gpt-5.6-luna": 2}
     """
     try:

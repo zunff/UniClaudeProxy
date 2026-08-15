@@ -227,6 +227,26 @@ def _is_peak(peak_hours: list[list[int]], now_bj: datetime) -> bool:
     return False
 
 
+_DEFAULT_FX_TO_CNY = {"USD": 7.2}
+
+
+def _to_cny(
+    cost: float,
+    currency: Optional[str],
+    fx_to_cny: Optional[dict[str, float]] = None,
+) -> tuple[float, str]:
+    """Convert a native-currency cost into CNY using fx_to_cny rates."""
+    code = (currency or "CNY").upper()
+    if code == "CNY":
+        return cost, "CNY"
+    rates = {**_DEFAULT_FX_TO_CNY, **(fx_to_cny or {})}
+    rate = rates.get(code)
+    if rate is None:
+        logger.warning("no fx_to_cny rate for %s; storing native currency", code)
+        return cost, code
+    return cost * float(rate), "CNY"
+
+
 def _compute_cost(
     prices: dict[str, Any],
     key: str,
@@ -234,8 +254,13 @@ def _compute_cost(
     output_tokens: int,
     cache_read: int,
     bindings: Optional[dict[str, str]] = None,
+    fx_to_cny: Optional[dict[str, float]] = None,
 ) -> tuple[Optional[float], Optional[str]]:
-    """Compute cost (per 1M tokens) for a route, respecting peak/off-peak."""
+    """Compute cost (per 1M tokens) for a route, respecting peak/off-peak.
+
+    Unit prices stay in the table's native currency (e.g. official USD).
+    The returned cost is converted to CNY when an FX rate is available.
+    """
     if not prices:
         return None, None
     price_name = None
@@ -270,6 +295,7 @@ def _compute_cost(
         + (cache_miss / 1_000_000.0) * p_in
         + (output_tokens / 1_000_000.0) * p_out
     )
+    cost, currency = _to_cny(cost, currency, fx_to_cny)
     return round(cost, 6), currency
 
 
@@ -310,7 +336,10 @@ def record(
         provider_name = getattr(route, "provider_name", "") or ""
         model_id = getattr(route, "model_id", "") or ""
         key = f"{provider_name}/{model_id}" if provider_name else model_id
-        cost, currency = _compute_cost(prices, key, input_tokens, output_tokens, cache_read, bindings)
+        fx_to_cny = getattr(cfg, "fx_to_cny", None) if cfg else None
+        cost, currency = _compute_cost(
+            prices, key, input_tokens, output_tokens, cache_read, bindings, fx_to_cny
+        )
 
         now_bj = datetime.now(_BEIJING_TZ)
         row = (

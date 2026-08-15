@@ -1,0 +1,28 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 9223,
+    "local_only": true
+  },
+  "upstream": {
+    "enabled": false,
+    "stream": {
+      "first_byte_timeout_ms": 8000
+    },
+    "non_stream": {
+      "first_byte_timeout_ms": 20000
+    },
+    "retry": {
+      "max_attempts": 3,
+      "interval_ms": 1000,
+      "total_timeout_ms": 45000
+    }
+  },
+  "billing": {
+    "enabled": true,
+    "db_file": "logs/billing.db",
+    "log_file": "logs/billing.jsonl",
+    "retention_days": 90,
+    "cleanup_hour": 3
+  }
+}

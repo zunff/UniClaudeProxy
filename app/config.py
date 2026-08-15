@@ -133,10 +133,15 @@ class BillingConfig(BaseModel):
             `<log_file>.migrated`.
         prices: dict - Named price tables (key = price name, e.g.
             "deepseek-v4-flash"). Each entry may carry peak/offpeak tiers
-            (per 1M tokens, CNY) plus peak_hours (Beijing time).
+            (per 1M tokens, in the table's own currency) plus peak_hours
+            (Beijing time). Official USD list prices stay in USD; billing
+            converts to CNY via fx_to_cny at record time.
         price_bindings: dict - Maps "provider/model_id" route keys to price
             table names. Multiple routes can share the same price table.
             Routes without a binding record token usage but cost=None.
+        fx_to_cny: dict - FX rates keyed by ISO currency (e.g. {"USD": 7.2})
+            used to convert non-CNY unit prices into CNY for stored costs
+            and dashboard totals.
         retention_days: int - Auto-cleanup retention window in days. Records
             older than this are deleted by the background scheduler. Set to
             0 to disable auto-cleanup (keep forever).
@@ -149,6 +154,7 @@ class BillingConfig(BaseModel):
     log_file: str = "logs/billing.jsonl"
     prices: dict[str, Any] = Field(default_factory=dict)
     price_bindings: dict[str, str] = Field(default_factory=dict)
+    fx_to_cny: dict[str, float] = Field(default_factory=lambda: {"USD": 7.2})
     retention_days: int = 90
     cleanup_hour: int = 3
 
@@ -262,6 +268,9 @@ _key_counters: dict[str, int] = {}
 _model_counters: dict[str, int] = {}
 _counter_lock = threading.Lock()
 
+_GLOBAL_UPSTREAM_KEYS = ("enabled", "stream", "non_stream", "retry")
+_GLOBAL_BILLING_KEYS = ("enabled", "db_file", "log_file", "retention_days", "cleanup_hour")
+
 
 def config_path() -> str:
     """Return the resolved path to config.json.
@@ -272,25 +281,109 @@ def config_path() -> str:
     return _config_path or str(Path(__file__).parent.parent / "config.json")
 
 
+def global_path(cfg_path: Optional[str] = None) -> str:
+    """Return the path to global.json (sibling of config.json)."""
+    return str(Path(cfg_path or config_path()).with_name("global.json"))
+
+
 def prices_path() -> str:
     """Return the resolved path to prices.json (separate from config.json)."""
-    return str(Path(__file__).parent.parent / "prices.json")
+    return str(Path(config_path()).parent / "prices.json")
+
+
+def _load_json_file(path: str) -> dict[str, Any]:
+    p = Path(path)
+    if not p.exists():
+        return {}
+    with open(p, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data if isinstance(data, dict) else {}
+
+
+def _overlay_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Shallow-merge overlay onto base; nested dicts are merged one level."""
+    out = dict(base)
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            merged = dict(out[k])
+            merged.update(v)
+            out[k] = merged
+        else:
+            out[k] = v
+    return out
+
+
+def merge_config_files(
+    global_raw: dict[str, Any],
+    local_raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge commitable global.json with local config.json.
+
+    global.json owns server / billing infra / upstream timeouts.
+    config.json owns models, providers, and upstream.disabled_routes.
+    Leftover global keys still present in config.json overlay for backward compat.
+    """
+    g_up = dict(global_raw.get("upstream") or {})
+    l_up = dict(local_raw.get("upstream") or {})
+    disabled = l_up.pop("disabled_routes", None)
+    g_up.pop("disabled_routes", None)
+    upstream = _overlay_dict(g_up, l_up)
+    if disabled is not None:
+        upstream["disabled_routes"] = disabled
+    else:
+        upstream.setdefault("disabled_routes", [])
+
+    server = _overlay_dict(
+        dict(global_raw.get("server") or {}),
+        dict(local_raw.get("server") or {}),
+    )
+    billing = _overlay_dict(
+        dict(global_raw.get("billing") or {}),
+        dict(local_raw.get("billing") or {}),
+    )
+
+    merged = dict(local_raw)
+    merged["server"] = server
+    merged["upstream"] = upstream
+    merged["billing"] = billing
+    merged["models"] = local_raw.get("models") or {}
+    merged["providers"] = local_raw.get("providers") or {}
+    return merged
+
+
+def split_config_files(merged: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split a merged config dict back into (global.json, config.json) payloads."""
+    up = merged.get("upstream") or {}
+    billing = merged.get("billing") or {}
+    global_out = {
+        "server": merged.get("server") or {},
+        "upstream": {k: up[k] for k in _GLOBAL_UPSTREAM_KEYS if k in up},
+        "billing": {k: billing[k] for k in _GLOBAL_BILLING_KEYS if k in billing},
+    }
+    local_out = {
+        "upstream": {"disabled_routes": up.get("disabled_routes") or []},
+        "models": merged.get("models") or {},
+        "providers": merged.get("providers") or {},
+    }
+    return global_out, local_out
 
 
 def _load_prices_file() -> dict[str, Any]:
-    """Load prices.json if it exists, return dict with 'prices' and 'price_bindings' keys."""
+    """Load prices.json if it exists, return prices / bindings / fx_to_cny."""
     p = Path(prices_path())
     if not p.exists():
-        return {"prices": {}, "price_bindings": {}}
+        return {"prices": {}, "price_bindings": {}, "fx_to_cny": {}}
     try:
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
+        fx = data.get("fx_to_cny") or {}
         return {
             "prices": data.get("prices", {}),
             "price_bindings": data.get("price_bindings", {}),
+            "fx_to_cny": {str(k).upper(): float(v) for k, v in fx.items() if v is not None},
         }
-    except (json.JSONDecodeError, OSError):
-        return {"prices": {}, "price_bindings": {}}
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        return {"prices": {}, "price_bindings": {}, "fx_to_cny": {}}
 
 
 def load_config(path: Optional[str] = None) -> AppConfig:
@@ -312,13 +405,19 @@ def load_config(path: Optional[str] = None) -> AppConfig:
     _config_path = path
 
     with open(path, "r", encoding="utf-8") as f:
-        raw: dict[str, Any] = json.load(f)
+        local_raw = json.load(f)
+    if not isinstance(local_raw, dict):
+        raise ValueError(f"config.json must be an object: {path}")
+    global_raw = _load_json_file(global_path(path))
+    raw = merge_config_files(global_raw, local_raw)
 
     # Merge prices from separate prices.json into billing config
     prices_data = _load_prices_file()
     billing = raw.get("billing", {})
     billing["prices"] = prices_data["prices"]
     billing["price_bindings"] = prices_data["price_bindings"]
+    if prices_data.get("fx_to_cny"):
+        billing["fx_to_cny"] = prices_data["fx_to_cny"]
     raw["billing"] = billing
 
     _config = AppConfig(**raw)

@@ -6,10 +6,8 @@ import {
   GitBranch,
   Layers,
   LineChart,
-  RefreshCw,
   Settings,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const items: { key: NavKey; label: string; icon: any; hint: string }[] = [
@@ -20,7 +18,9 @@ const items: { key: NavKey; label: string; icon: any; hint: string }[] = [
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { nav, setNav, loading, fetchAll } = useAdmin();
+  const { nav, setNav, config } = useAdmin();
+  const host = config?.server?.host || "127.0.0.1";
+  const port = config?.server?.port ?? 9223;
 
   return (
     <div className="relative min-h-screen bg-brand-bg text-slate-100">
@@ -94,7 +94,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex items-center gap-3">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-brand-borderSubtle bg-brand-panel2 text-xs text-brand-cyan whitespace-nowrap">
                 <Activity className="w-3 h-3" />
-                CONNECTED · 127.0.0.1:10388
+                CONNECTED · {host}:{port}
               </span>
               <span className="text-sm text-slate-400">
                 今日概览 · {new Date().toLocaleDateString("zh-CN")}

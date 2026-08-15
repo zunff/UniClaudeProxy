@@ -12,10 +12,12 @@ if %errorLevel% neq 0 (
 
 echo Starting UniClaudeProxy with administrator privileges...
 set "HOST=127.0.0.1"
-set "PORT=8000"
+set "PORT=9223"
 
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$cfg = Get-Content -Raw -Path 'config.json' | ConvertFrom-Json; $cfg.server.host"`) do set "HOST=%%i"
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$cfg = Get-Content -Raw -Path 'config.json' | ConvertFrom-Json; $cfg.server.port"`) do set "PORT=%%i"
+if exist global.json (
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$cfg = Get-Content -Raw -Path 'global.json' | ConvertFrom-Json; if ($cfg.server.host) { $cfg.server.host } else { '127.0.0.1' }"`) do set "HOST=%%i"
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$cfg = Get-Content -Raw -Path 'global.json' | ConvertFrom-Json; if ($cfg.server.port) { $cfg.server.port } else { 9223 }"`) do set "PORT=%%i"
+)
 
 echo Using host=%HOST% port=%PORT%
 python -m uvicorn app.main:app --host %HOST% --port %PORT% --reload

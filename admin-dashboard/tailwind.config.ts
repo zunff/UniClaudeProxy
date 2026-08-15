@@ -44,19 +44,24 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        // Tech palette
+        // Clean Tech Palette
         brand: {
-          cyan: "#22d3ee",
+          cyan: "#06b6d4",
+          cyanLight: "#22d3ee",
           cyanDim: "#0891b2",
-          blue: "#60a5fa",
+          blue: "#3b82f6",
           violet: "#8b5cf6",
-          green: "#34d399",
-          amber: "#fbbf24",
-          rose: "#fb7185",
-          bg: "#030712",
-          panel: "#0b1220",
-          panel2: "#111a2e",
-          borderSubtle: "#1f2a44",
+          green: "#10b981",
+          emerald: "#059669",
+          amber: "#f59e0b",
+          rose: "#f43f5e",
+          // Clean solid surfaces
+          bg: "#090d16",
+          panel: "#0f1629",
+          panel2: "#141d36",
+          panel3: "#1a2544",
+          borderSubtle: "#1e293b",
+          borderHover: "#334155",
         },
       },
       borderRadius: {
@@ -65,28 +70,28 @@ export default {
         sm: "calc(var(--radius) - 4px)",
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(34,211,238,0.15), 0 0 32px -8px rgba(34,211,238,0.25)",
-        glowViolet:
-          "0 0 0 1px rgba(139,92,246,0.2), 0 0 40px -10px rgba(139,92,246,0.3)",
-        insetPanel: "inset 0 1px 0 0 rgba(255,255,255,0.03)",
+        glow: "0 0 0 1px rgba(6,182,212,0.3), 0 4px 20px -2px rgba(6,182,212,0.15)",
+        glowSm: "0 0 0 1px rgba(6,182,212,0.25)",
+        card: "0 4px 20px -2px rgba(0, 0, 0, 0.4)",
+        cardHover: "0 8px 30px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(6, 182, 212, 0.25)",
       },
       keyframes: {
-        "grid-move": {
-          "0%": { backgroundPosition: "0 0" },
-          "100%": { backgroundPosition: "40px 40px" },
+        shimmer: {
+          "100%": { transform: "translateX(100%)" },
         },
-        "pulse-slow": {
-          "0%,100%": { opacity: "0.7" },
-          "50%": { opacity: "1" },
+        pulseSubtle: {
+          "0%, 100%": { opacity: "1" },
+          "50%": { opacity: "0.5" },
+        },
+        fadeIn: {
+          "0%": { opacity: "0", transform: "translateY(4px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
         },
       },
       animation: {
-        "grid-move": "grid-move 12s linear infinite",
-        "pulse-slow": "pulse-slow 3s ease-in-out infinite",
-      },
-      backgroundImage: {
-        "tech-grid":
-          "linear-gradient(rgba(34,211,238,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.07) 1px, transparent 1px)",
+        shimmer: "shimmer 2s infinite",
+        pulseSubtle: "pulseSubtle 2s ease-in-out infinite",
+        fadeIn: "fadeIn 0.2s ease-out",
       },
     },
   },

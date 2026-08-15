@@ -1,19 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   ArrowRight,
   GitBranch,
   Layers,
   Plus,
   RefreshCw,
+  Route,
   Save,
   Search,
   Trash2,
   X,
 } from "lucide-react";
-import {
-  useAdmin,
-  type ModelRoute,
-} from "@/store/admin";
+import { useAdmin, type ModelRoute } from "@/store/admin";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -27,6 +26,7 @@ import { SelectField } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -54,15 +54,6 @@ function getRouteWeights(r: ModelRoute | undefined): Record<string, number> {
   return r as Record<string, number>;
 }
 
-function summarizeRoute(r: ModelRoute | undefined): string {
-  if (!r) return "—";
-  if (typeof r === "string") return r;
-  if (Array.isArray(r)) return r.join(", ");
-  return Object.entries(r)
-    .map(([k, w]) => `${k}(w:${w})`)
-    .join(", ");
-}
-
 function MappingEditDialog({
   claudeModel,
   initialRoutes,
@@ -79,13 +70,13 @@ function MappingEditDialog({
   const initialMode = getRouteMode(initialRoutes);
   const [mode, setMode] = useState<RouteMode>(initialMode);
   const [selected, setSelected] = useState<string>(
-    typeof initialRoutes === "string" ? initialRoutes : "",
+    typeof initialRoutes === "string" ? initialRoutes : ""
   );
   const [list, setList] = useState<string[]>(
-    Array.isArray(initialRoutes) ? [...initialRoutes] : [],
+    Array.isArray(initialRoutes) ? [...initialRoutes] : []
   );
   const [weights, setWeights] = useState<Record<string, number>>(
-    getRouteWeights(initialRoutes),
+    getRouteWeights(initialRoutes)
   );
   const [pickRoute, setPickRoute] = useState("");
 
@@ -132,39 +123,45 @@ function MappingEditDialog({
         ? [selected]
         : []
       : mode === "list"
-        ? list
-        : Object.keys(weights);
+      ? list
+      : Object.keys(weights);
 
-  const unusedRoutes = availableRoutes.filter((r) => !currentRoutes.includes(r));
+  const unusedRoutes = availableRoutes.filter(
+    (r) => !currentRoutes.includes(r)
+  );
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <GitBranch className="w-5 h-5 text-brand-violet" />
-            编辑映射 · {claudeModel}
+            <GitBranch className="w-5 h-5 text-purple-400" />
+            编辑模型映射 · {claudeModel}
           </DialogTitle>
+          <DialogDescription>
+            配置直通单路由、多上游负载均衡或权重轮询
+          </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
+        <div className="space-y-4 font-mono">
           <div>
             <Label>路由模式</Label>
-            <div className="flex gap-2 mt-1">
+            <div className="grid grid-cols-3 gap-2 mt-1">
               {(
                 [
                   { v: "single", label: "单一路由" },
-                  { v: "list", label: "负载均衡" },
-                  { v: "weighted", label: "加权路由" },
+                  { v: "list", label: "负载均衡 (轮询)" },
+                  { v: "weighted", label: "按权重分流" },
                 ] as { v: RouteMode; label: string }[]
               ).map((opt) => (
                 <button
                   key={opt.v}
                   onClick={() => setMode(opt.v)}
+                  type="button"
                   className={cn(
-                    "px-3 py-1.5 rounded-md text-xs border transition-colors",
+                    "p-2 rounded-lg text-xs border text-center transition-all",
                     mode === opt.v
-                      ? "border-brand-cyan/40 bg-brand-cyan/10 text-brand-cyan"
-                      : "border-brand-borderSubtle bg-slate-950/40 text-slate-400 hover:text-slate-200",
+                      ? "border-purple-500 bg-purple-500/15 text-purple-300 font-bold"
+                      : "border-brand-borderSubtle bg-slate-950/60 text-slate-400 hover:text-slate-200"
                   )}
                 >
                   {opt.label}
@@ -175,7 +172,7 @@ function MappingEditDialog({
 
           <div>
             <Label>已选路由</Label>
-            <div className="mt-1 space-y-1.5 min-h-[2rem]">
+            <div className="mt-1 space-y-1.5 min-h-[2.5rem]">
               {mode === "single" ? (
                 <SelectField
                   className="font-mono"
@@ -187,30 +184,43 @@ function MappingEditDialog({
               ) : (
                 <>
                   {currentRoutes.length === 0 ? (
-                    <div className="text-xs text-slate-500 py-2">尚未选择路由</div>
+                    <div className="text-xs text-slate-500 py-3 text-center rounded border border-dashed border-brand-borderSubtle">
+                      尚未选择任何路由
+                    </div>
                   ) : (
                     currentRoutes.map((r) => (
                       <div
                         key={r}
-                        className="flex items-center justify-between p-2 rounded-md bg-slate-900/40 border border-brand-borderSubtle"
+                        className="flex items-center justify-between p-2 rounded-lg bg-slate-950/60 border border-brand-borderSubtle"
                       >
-                        <span className="text-sm font-mono text-slate-200">{r}</span>
-                        {mode === "weighted" && (
-                          <input
-                            type="number"
-                            value={weights[r] ?? 1}
-                            onChange={(e) =>
-                              setWeights({ ...weights, [r]: Number(e.target.value) })
-                            }
-                            className="w-16 h-7 rounded border border-brand-borderSubtle bg-slate-950/40 px-2 text-xs text-slate-200 text-right"
-                          />
-                        )}
-                        <button
-                          onClick={() => removeRoute(r)}
-                          className="text-slate-500 hover:text-rose-400"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
+                        <span className="text-xs font-mono font-bold text-slate-200">
+                          {r}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {mode === "weighted" && (
+                            <div className="flex items-center gap-1">
+                              <span className="text-[11px] text-slate-400">权重:</span>
+                              <input
+                                type="number"
+                                min="1"
+                                value={weights[r] ?? 1}
+                                onChange={(e) =>
+                                  setWeights({
+                                    ...weights,
+                                    [r]: Math.max(1, Number(e.target.value)),
+                                  })
+                                }
+                                className="w-12 h-6 rounded border border-brand-borderSubtle bg-slate-900 px-1 text-xs text-cyan-400 font-bold text-center"
+                              />
+                            </div>
+                          )}
+                          <button
+                            onClick={() => removeRoute(r)}
+                            className="text-slate-500 hover:text-rose-400 p-1"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     ))
                   )}
@@ -227,14 +237,15 @@ function MappingEditDialog({
                   className="flex-1 font-mono"
                   value={pickRoute}
                   onValueChange={setPickRoute}
-                  placeholder="— 选择 provider/model_id —"
+                  placeholder="— 选择待添加路由 —"
                   options={unusedRoutes}
                 />
                 <Button
                   variant="secondary"
-                  size="sm"
+                  size="default"
                   onClick={() => addRoute(pickRoute)}
                   disabled={!pickRoute}
+                  className="text-xs"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   添加
@@ -274,6 +285,7 @@ function NewMappingDialog({
   const submit = async () => {
     if (!name.trim() || !route) return;
     if (existingModels.includes(name.trim())) {
+      toast.error("该 Claude 模型名已存在映射");
       return;
     }
     const ok = await onSave(name.trim(), route);
@@ -285,13 +297,16 @@ function NewMappingDialog({
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Plus className="w-5 h-5 text-brand-cyan" />
+            <Plus className="w-5 h-5 text-purple-400" />
             新建 Claude 模型映射
           </DialogTitle>
+          <DialogDescription>
+            将客户端请求的 Claude 模型映射至后端的上游 Provider 路由
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div>
-            <Label>Claude 模型名</Label>
+            <Label>Claude 模型名 (客户端发送)</Label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -299,7 +314,7 @@ function NewMappingDialog({
             />
           </div>
           <div>
-            <Label>路由到</Label>
+            <Label>目标路由</Label>
             <SelectField
               className="font-mono"
               value={route}
@@ -320,7 +335,7 @@ function NewMappingDialog({
             disabled={!name.trim() || !route}
           >
             <Plus className="w-4 h-4" />
-            创建
+            确认创建
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -352,7 +367,7 @@ export default function MappingsPage() {
     return Object.entries(raw)
       .filter(
         ([name, _]) =>
-          !filter.trim() || name.toLowerCase().includes(filter.toLowerCase()),
+          !filter.trim() || name.toLowerCase().includes(filter.toLowerCase())
       )
       .map(([name, routes]) => ({ name, routes }));
   }, [config, pricesResp, filter]);
@@ -373,44 +388,56 @@ export default function MappingsPage() {
   const existingModels = Object.keys(config?.models ?? {});
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 w-full">
+      {/* Header */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-wide glow-text">
-            模型映射
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">
-            把 Claude 模型名映射到后端 Provider 路由。修改{" "}
-            <code className="text-brand-cyan">config.models</code>。
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-2xl font-bold text-white tracking-tight">
+              模型映射
+            </h1>
+            <span className="px-2 py-0.5 rounded text-[11px] font-mono border border-purple-500/30 bg-purple-500/10 text-purple-400 font-semibold">
+              MAPPINGS
+            </span>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">
+            将客户端请求的 Claude 模型映射至后端的上游 Provider 路由。
           </p>
         </div>
+
         <div className="flex items-center gap-3">
-          <div className="relative w-72">
+          <div className="relative w-64">
             <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
             <Input
-              className="pl-9"
+              className="pl-9 h-9"
               placeholder="搜索 Claude 模型"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
             />
           </div>
-          <Button variant="ghost" size="icon" onClick={fetchPrices} disabled={loading}>
-            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+          <Button
+            variant="secondary"
+            size="icon"
+            onClick={fetchPrices}
+            disabled={loading}
+            className="h-9 w-9"
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5 text-cyan-400", loading && "animate-spin")} />
           </Button>
-          <Button variant="primary" onClick={() => setCreating(true)}>
+          <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
             <Plus className="w-4 h-4" />
             新建映射
           </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+      {/* Mappings Grid - 4 columns on wide screen */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-5">
         {models.length === 0 ? (
-          <Card className="xl:col-span-2">
-            <CardContent className="py-14 text-center text-slate-400">
-              <Layers className="mx-auto w-10 h-10 text-brand-violet/60 mb-3" />
-              <div className="text-white font-semibold mb-1">暂无模型映射</div>
-              <div>点击右上角「新建映射」创建第一条 Claude 模型路由。</div>
+          <Card className="col-span-full">
+            <CardContent className="py-12 text-center text-slate-500 font-mono text-xs">
+              <Route className="mx-auto w-8 h-8 text-slate-600 mb-2" />
+              <div>暂无模型映射</div>
             </CardContent>
           </Card>
         ) : (
@@ -419,56 +446,74 @@ export default function MappingsPage() {
             const mode = getRouteMode(m.routes);
 
             return (
-              <Card key={m.name}>
+              <Card key={m.name} className="hover:border-slate-700">
                 <CardHeader>
-                  <CardTitle className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-base text-white">{m.name}</span>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <span className="font-mono text-base font-bold text-purple-300 truncate block">
+                        {m.name}
+                      </span>
+                      <div className="flex items-center gap-2 mt-1 text-xs text-slate-400 font-mono">
+                        <span
+                          className={cn(
+                            "text-[10px] px-1.5 py-0.2 rounded border font-medium",
+                            mode === "single"
+                              ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300"
+                              : mode === "list"
+                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                              : "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                          )}
+                        >
+                          {mode === "single"
+                            ? "单一直通"
+                            : mode === "list"
+                            ? "负载均衡"
+                            : "加权分流"}
+                        </span>
+                        <span>{routes.length} 条路由</span>
+                      </div>
+                    </div>
+
                     <div className="flex items-center gap-1">
                       <Button
-                        variant="ghost"
+                        variant="secondary"
                         size="sm"
+                        className="h-7 text-xs font-mono px-2.5"
                         onClick={() => setEditing(m.name)}
                       >
-                        <GitBranch className="w-3.5 h-3.5" />
+                        <GitBranch className="w-3 h-3" />
                         编辑
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
+                        className="h-7 w-7 text-slate-400 hover:text-rose-400"
                         onClick={async () => {
                           if (confirm(`确定删除映射 ${m.name}？`))
                             await deleteModelMapping(m.name);
                         }}
                       >
-                        <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                        <Trash2 className="w-3.5 h-3.5" />
                       </Button>
                     </div>
-                  </CardTitle>
-                  <CardDescription>
-                    {routes.length} 条路由 ·{" "}
-                    {mode === "single"
-                      ? "单一路由"
-                      : mode === "list"
-                        ? "负载均衡"
-                        : "加权路由"}
-                  </CardDescription>
+                  </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-2">
+                  <div className="space-y-1.5">
                     {routes.map((r) => {
                       const weight = getRouteWeights(m.routes)[r];
                       return (
                         <div
                           key={r}
-                          className="flex items-center gap-3 p-2.5 rounded-lg bg-slate-900/40 border border-brand-borderSubtle"
+                          className="flex items-center gap-2.5 p-2 rounded-lg bg-slate-950/70 border border-brand-borderSubtle font-mono"
                         >
-                          <ArrowRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                          <span className="text-sm font-mono text-slate-200 flex-1">
+                          <ArrowRight className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                          <span className="text-xs font-semibold text-slate-200 flex-1 truncate">
                             {r}
                           </span>
                           {weight !== undefined && (
-                            <span className="text-xs px-1.5 py-0.5 rounded border border-brand-violet/30 bg-brand-violet/10 text-brand-violet whitespace-nowrap">
-                              w:{weight}
+                            <span className="text-[11px] font-mono font-bold px-1.5 py-0.2 rounded border border-purple-500/40 bg-purple-500/15 text-purple-300 whitespace-nowrap">
+                              权重: {weight}
                             </span>
                           )}
                         </div>
@@ -482,6 +527,7 @@ export default function MappingsPage() {
         )}
       </div>
 
+      {/* Edit Dialog */}
       {editing && (
         <MappingEditDialog
           claudeModel={editing}
@@ -492,6 +538,7 @@ export default function MappingsPage() {
         />
       )}
 
+      {/* New Dialog */}
       {creating && (
         <NewMappingDialog
           existingModels={existingModels}

@@ -5,30 +5,31 @@
 @layer base {
   :root {
     --radius: 0.625rem;
-    --background: 221 55% 4%;
+    --background: 224 71% 4%;
     --foreground: 210 40% 98%;
-    --card: 221 45% 7%;
+    --card: 224 45% 8%;
     --card-foreground: 210 40% 98%;
-    --popover: 221 45% 8%;
+    --popover: 224 45% 8%;
     --popover-foreground: 210 40% 98%;
-    --primary: 191 90% 50%;
-    --primary-foreground: 222 47% 11%;
-    --secondary: 221 35% 14%;
+    --primary: 189 94% 43%;
+    --primary-foreground: 224 71% 4%;
+    --secondary: 224 35% 14%;
     --secondary-foreground: 210 40% 98%;
-    --muted: 221 25% 16%;
+    --muted: 224 25% 16%;
     --muted-foreground: 215 20% 65%;
-    --accent: 191 60% 24%;
+    --accent: 189 75% 20%;
     --accent-foreground: 210 40% 98%;
-    --destructive: 0 75% 60%;
+    --destructive: 348 80% 55%;
     --destructive-foreground: 210 40% 98%;
-    --border: 221 28% 20%;
-    --input: 221 28% 18%;
-    --ring: 191 90% 50%;
+    --border: 224 25% 18%;
+    --input: 224 25% 16%;
+    --ring: 189 94% 43%;
   }
 
   * {
     @apply border-border;
   }
+
   html,
   body,
   #root {
@@ -37,19 +38,39 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
   body {
-    @apply bg-background text-foreground;
+    @apply bg-brand-bg text-slate-200;
     font-family:
       ui-sans-serif,
       system-ui,
       -apple-system,
+      BlinkMacSystemFont,
       "Segoe UI",
       Roboto,
       "PingFang SC",
+      "Hiragino Sans GB",
       "Microsoft YaHei",
       sans-serif;
     overflow-x: hidden;
+    background-color: #090d16;
   }
+
+  code,
+  pre,
+  .font-mono,
+  .tabular-nums {
+    font-family:
+      ui-monospace,
+      "JetBrains Mono",
+      "Fira Code",
+      "Cascadia Code",
+      SFMono-Regular,
+      Menlo,
+      Consolas,
+      monospace;
+  }
+
   main {
     will-change: scroll-position;
     transform: translateZ(0);
@@ -58,46 +79,59 @@
 }
 
 @layer utilities {
+  /* Clean Solid Tech Card */
   .tech-card {
-    @apply relative rounded-xl border border-brand-borderSubtle bg-brand-panel shadow-insetPanel overflow-hidden;
+    @apply relative rounded-xl border border-brand-borderSubtle bg-brand-panel p-5 shadow-card transition-all duration-200;
   }
-  .tech-card::before {
+
+  .tech-card:hover {
+    @apply border-slate-700;
+  }
+
+  /* Skeleton Loading */
+  .skeleton {
+    @apply relative overflow-hidden bg-slate-800/60 rounded-md;
+  }
+
+  .skeleton::after {
     content: "";
     position: absolute;
     inset: 0;
+    transform: translateX(-100%);
     background: linear-gradient(
-        135deg,
-        rgba(34, 211, 238, 0.08) 0%,
-        transparent 40%,
-        transparent 60%,
-        rgba(139, 92, 246, 0.08) 100%
-      );
-    pointer-events: none;
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.05) 50%,
+      transparent 100%
+    );
+    animation: shimmer 1.6s infinite;
   }
-  .tech-grid {
-    background-image: linear-gradient(
-        rgba(34, 211, 238, 0.06) 1px,
-        transparent 1px
-      ),
-      linear-gradient(
-        90deg,
-        rgba(34, 211, 238, 0.06) 1px,
-        transparent 1px
-      );
-    background-size: 40px 40px;
+
+  /* Table Row Clean Hover */
+  .clean-table-row {
+    @apply transition-colors duration-150;
   }
-  .glow-text {
-    text-shadow: 0 0 16px rgba(34, 211, 238, 0.45);
+
+  .clean-table-row:hover {
+    background-color: rgba(255, 255, 255, 0.03);
   }
+
+  /* Scrollbars */
   .scrollbar-thin::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
   }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: #090d16;
+  }
+
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: rgba(99, 179, 237, 0.2);
+    background: #1e293b;
     border-radius: 9999px;
   }
+
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background: rgba(99, 179, 237, 0.35);
+    background: #334155;
   }
 }

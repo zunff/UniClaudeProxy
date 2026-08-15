@@ -20,5 +20,5 @@ if exist global.json (
 )
 
 echo Using host=%HOST% port=%PORT%
-python -m uvicorn app.main:app --host %HOST% --port %PORT% --reload
+python -m uvicorn app.main:app --host %HOST% --port %PORT%
 pause

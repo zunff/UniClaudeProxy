@@ -11,4 +11,4 @@ if [ -f global.json ]; then
 fi
 
 echo "Using host=${HOST} port=${PORT}"
-python3 -m uvicorn app.main:app --host "$HOST" --port "$PORT" --reload
+python3 -m uvicorn app.main:app --host "$HOST" --port "$PORT"

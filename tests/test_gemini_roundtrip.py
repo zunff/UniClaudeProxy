@@ -183,12 +183,35 @@ class GeminiRoundTripTests(unittest.TestCase):
         )
         flash = to_gemini_request(request, "gemini-3.5-flash")
         pro = to_gemini_request(request, "gemini-3.1-pro-preview")
+        flash37 = to_gemini_request(request, "gemini-3.7-flash")
         self.assertEqual(
             flash["generationConfig"]["thinkingConfig"]["thinkingLevel"],
             "minimal",
         )
         self.assertEqual(
             pro["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "low",
+        )
+        self.assertEqual(
+            flash37["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "low",
+        )
+
+    def test_maps_minimal_effort_away_from_unsupported_level(self):
+        request = AnthropicRequest(
+            model="claude-sonnet-5",
+            messages=[{"role": "user", "content": "test"}],
+            thinking={"type": "adaptive"},
+            output_config={"effort": "minimal"},
+        )
+        flash35 = to_gemini_request(request, "gemini-3.5-flash")
+        flash37 = to_gemini_request(request, "gemini-3.7-flash")
+        self.assertEqual(
+            flash35["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "minimal",
+        )
+        self.assertEqual(
+            flash37["generationConfig"]["thinkingConfig"]["thinkingLevel"],
             "low",
         )
 
@@ -401,6 +424,69 @@ class GeminiRoundTripTests(unittest.TestCase):
         self.assertEqual(len(body["messages"]), 1)
         self.assertEqual(body["messages"][0]["role"], "tool")
         self.assertIn("image support is disabled", body["messages"][0]["content"])
+
+    def test_non_streaming_usage_parses_cached_content_tokens(self):
+        raw_response = {
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "hello"}],
+                },
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 27510,
+                "candidatesTokenCount": 4,
+                "thoughtsTokenCount": 67,
+                "cachedContentTokenCount": 24695,
+            },
+        }
+
+        anthropic = from_gemini_response(raw_response, "claude-sonnet-5")
+        usage = anthropic.get("usage", {})
+        self.assertEqual(usage.get("input_tokens"), 27510)
+        self.assertEqual(usage.get("output_tokens"), 71)
+        self.assertEqual(usage.get("cache_read_input_tokens"), 24695)
+        self.assertEqual(usage.get("cache_creation_input_tokens"), 0)
+
+    def test_streaming_usage_emits_input_and_cached_content_tokens_in_message_delta(self):
+        payload = {
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "chunk"}],
+                },
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 27671,
+                "candidatesTokenCount": 4,
+                "thoughtsTokenCount": 84,
+                "cachedContentTokenCount": 24694,
+            },
+        }
+
+        async def source():
+            yield f"data: {json.dumps(payload)}\n\n".encode()
+
+        async def collect():
+            return [event async for event in stream_gemini_to_anthropic(
+                source(),
+                "claude-sonnet-5",
+            )]
+
+        events = asyncio.run(collect())
+        delta_events = [event for event in events if "message_delta" in event]
+        self.assertTrue(len(delta_events) >= 1)
+        data_line = next(
+            line for line in delta_events[-1].splitlines()
+            if line.startswith("data: ")
+        )
+        event_data = json.loads(data_line[6:])
+        usage = event_data.get("usage", {})
+        self.assertEqual(usage.get("input_tokens"), 27671)
+        self.assertEqual(usage.get("output_tokens"), 88)
+        self.assertEqual(usage.get("cache_read_input_tokens"), 24694)
+        self.assertEqual(usage.get("cache_creation_input_tokens"), 0)
 
 
 if __name__ == "__main__":

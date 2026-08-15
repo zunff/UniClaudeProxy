@@ -33,6 +33,8 @@ debug.log
 *.swo
 *~
 .codegraph/
+.claude/
+.playwright-cli/
 
 .DS_Store
 Thumbs.db

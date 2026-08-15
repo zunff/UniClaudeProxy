@@ -7,7 +7,7 @@ export const Card = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("tech-card p-5", className)}
+    className={cn("rounded-xl border border-brand-borderSubtle bg-brand-panel p-5 shadow-sm transition-all duration-150 hover:border-slate-700", className)}
     {...props}
   />
 ));
@@ -19,7 +19,10 @@ export const CardHeader = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex flex-col gap-1.5 pb-4 mb-4 border-b border-brand-borderSubtle/60", className)}
+    className={cn(
+      "flex flex-col gap-1 pb-3 mb-4 border-b border-brand-borderSubtle",
+      className
+    )}
     {...props}
   />
 ));
@@ -31,7 +34,10 @@ export const CardTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <h3
     ref={ref}
-    className={cn("text-lg font-semibold text-white tracking-wide", className)}
+    className={cn(
+      "text-base font-bold text-white tracking-tight flex items-center gap-2",
+      className
+    )}
     {...props}
   />
 ));
@@ -43,7 +49,7 @@ export const CardDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-sm text-slate-400", className)}
+    className={cn("text-xs text-slate-400 font-normal leading-relaxed", className)}
     {...props}
   />
 ));
@@ -53,7 +59,7 @@ export const CardContent = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("space-y-4", className)} {...props} />
+  <div ref={ref} className={cn("space-y-3", className)} {...props} />
 ));
 CardContent.displayName = "CardContent";
 
@@ -63,7 +69,10 @@ export const CardFooter = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("mt-4 pt-4 border-t border-brand-borderSubtle/60 flex items-center gap-3", className)}
+    className={cn(
+      "mt-4 pt-3 border-t border-brand-borderSubtle flex items-center justify-between gap-3",
+      className
+    )}
     {...props}
   />
 ));

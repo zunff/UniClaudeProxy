@@ -289,6 +289,7 @@ def from_gemini_response(
 
     usage_meta = response_data.get("usageMetadata", {})
     input_tokens = usage_meta.get("promptTokenCount", 0)
+    cache_read_tokens = usage_meta.get("cachedContentTokenCount", 0)
     # Include thinking tokens so usage reflects the real generation budget.
     output_tokens = (
         usage_meta.get("candidatesTokenCount", 0)
@@ -306,6 +307,8 @@ def from_gemini_response(
         "usage": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": cache_read_tokens,
         },
     }
 
@@ -456,12 +459,21 @@ def _build_content_block_stop_event(index: int) -> str:
     })
 
 
-def _build_message_delta_event(stop_reason: str, output_tokens: int = 0) -> str:
+def _build_message_delta_event(
+    stop_reason: str,
+    output_tokens: int = 0,
+    input_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> str:
     """Build the Anthropic message_delta SSE event.
 
     Args:
         stop_reason: str - The stop reason string.
         output_tokens: int - Number of output tokens.
+        input_tokens: int - Number of input tokens.
+        cache_read_tokens: int - Number of cached input tokens.
+        cache_creation_tokens: int - Number of tokens written to cache.
 
     Returns:
         str - Formatted message_delta SSE event.
@@ -469,7 +481,12 @@ def _build_message_delta_event(stop_reason: str, output_tokens: int = 0) -> str:
     return _sse_event("message_delta", {
         "type": "message_delta",
         "delta": {"type": "message_delta", "stop_reason": stop_reason, "stop_sequence": None},
-        "usage": {"output_tokens": output_tokens},
+        "usage": {
+            "output_tokens": output_tokens,
+            "input_tokens": input_tokens,
+            "cache_read_input_tokens": cache_read_tokens,
+            "cache_creation_input_tokens": cache_creation_tokens,
+        },
     })
 
 
@@ -514,6 +531,7 @@ async def stream_gemini_to_anthropic(
     started = False
     output_tokens = 0
     input_tokens = 0
+    cache_read_tokens = 0
     finish_reason = "STOP"
     has_tool_use = False
     emitted_part_signatures: set[str] = set()
@@ -554,6 +572,7 @@ async def stream_gemini_to_anthropic(
                     + usage_meta.get("thoughtsTokenCount", 0)
                 ) or output_tokens
                 input_tokens = usage_meta.get("promptTokenCount", input_tokens)
+                cache_read_tokens = usage_meta.get("cachedContentTokenCount", cache_read_tokens)
 
             candidates = data.get("candidates", [])
             if not candidates:
@@ -664,5 +683,10 @@ async def stream_gemini_to_anthropic(
         yield _build_content_block_stop_event(0)
 
     stop_reason = "tool_use" if has_tool_use else _map_finish_reason(finish_reason)
-    yield _build_message_delta_event(stop_reason, output_tokens)
+    yield _build_message_delta_event(
+        stop_reason,
+        output_tokens=output_tokens,
+        input_tokens=input_tokens,
+        cache_read_tokens=cache_read_tokens,
+    )
     yield _build_message_stop_event()

@@ -337,6 +337,22 @@ def _build_contents(request: AnthropicRequest) -> list[dict[str, Any]]:
     return contents
 
 
+# Gemini 3.7 Flash dropped MINIMAL (400 if set). 3.x Pro never supported it.
+def _gemini3_supports_minimal(model_id: str) -> bool:
+    mid = model_id.lower()
+    if "pro" in mid:
+        return False
+    if "gemini-3.7" in mid:
+        return False
+    return True
+
+
+def _gemini3_thinking_level(level: str, model_id: str) -> str:
+    if level == "minimal" and not _gemini3_supports_minimal(model_id):
+        return "low"
+    return level
+
+
 def _gemini_thinking_config(
     request: AnthropicRequest,
     model_id: str,
@@ -360,8 +376,8 @@ def _gemini_thinking_config(
     if thinking_type == "disabled":
         if is_gemini_25:
             return {"thinkingBudget": 0, "includeThoughts": False}
-        # Gemini 3.1 Pro cannot disable thinking and does not support minimal.
-        level = "low" if "pro" in model_id.lower() else "minimal"
+        # Gemini 3 cannot fully disable thinking. Use the lowest supported level.
+        level = _gemini3_thinking_level("minimal", model_id)
         return {"thinkingLevel": level, "includeThoughts": False}
 
     enabled = thinking_type in {"enabled", "adaptive"} or bool(effort)
@@ -384,7 +400,10 @@ def _gemini_thinking_config(
             "xhigh": "high",
         }.get(effort)
         if level:
-            return {"thinkingLevel": level, "includeThoughts": True}
+            return {
+                "thinkingLevel": _gemini3_thinking_level(level, model_id),
+                "includeThoughts": True,
+            }
 
     if isinstance(budget, int):
         if budget <= 1024:

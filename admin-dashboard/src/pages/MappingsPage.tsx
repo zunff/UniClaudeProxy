@@ -23,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input, Label } from "@/components/ui/input";
+import { SelectField } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -176,18 +177,13 @@ function MappingEditDialog({
             <Label>已选路由</Label>
             <div className="mt-1 space-y-1.5 min-h-[2rem]">
               {mode === "single" ? (
-                <select
-                  className="w-full h-9 rounded-md border border-brand-borderSubtle bg-slate-950/40 px-3 py-1 text-sm text-slate-200 font-mono"
+                <SelectField
+                  className="font-mono"
                   value={selected}
-                  onChange={(e) => setSelected(e.target.value)}
-                >
-                  <option value="">— 选择 provider/model_id —</option>
-                  {availableRoutes.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={setSelected}
+                  placeholder="— 选择 provider/model_id —"
+                  options={availableRoutes}
+                />
               ) : (
                 <>
                   {currentRoutes.length === 0 ? (
@@ -227,18 +223,13 @@ function MappingEditDialog({
             <div>
               <Label>添加路由</Label>
               <div className="flex gap-2 mt-1">
-                <select
-                  className="flex h-9 flex-1 rounded-md border border-brand-borderSubtle bg-slate-950/40 px-3 py-1 text-sm text-slate-100"
+                <SelectField
+                  className="flex-1 font-mono"
                   value={pickRoute}
-                  onChange={(e) => setPickRoute(e.target.value)}
-                >
-                  <option value="">— 选择 provider/model_id —</option>
-                  {unusedRoutes.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={setPickRoute}
+                  placeholder="— 选择 provider/model_id —"
+                  options={unusedRoutes}
+                />
                 <Button
                   variant="secondary"
                   size="sm"
@@ -309,18 +300,13 @@ function NewMappingDialog({
           </div>
           <div>
             <Label>路由到</Label>
-            <select
-              className="flex h-9 w-full rounded-md border border-brand-borderSubtle bg-slate-950/40 px-3 py-1 text-sm text-slate-100"
+            <SelectField
+              className="font-mono"
               value={route}
-              onChange={(e) => setRoute(e.target.value)}
-            >
-              <option value="">— 选择 provider/model_id —</option>
-              {availableRoutes.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
+              onValueChange={setRoute}
+              placeholder="— 选择 provider/model_id —"
+              options={availableRoutes}
+            />
           </div>
         </div>
         <DialogFooter>

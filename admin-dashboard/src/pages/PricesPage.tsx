@@ -22,6 +22,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input, Label } from "@/components/ui/input";
+import { SelectField } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -536,18 +537,13 @@ export default function PricesPage() {
                         <div className="space-y-3">
                           <div>
                             <Label>选择路由（provider/model_id）</Label>
-                            <select
-                              className="flex h-9 w-full rounded-md border border-brand-borderSubtle bg-slate-950/40 px-3 py-1 text-sm text-slate-100"
+                            <SelectField
+                              className="font-mono"
                               value={bindRoute}
-                              onChange={(e) => setBindRoute(e.target.value)}
-                            >
-                              <option value="">— 选择路由 —</option>
-                              {unboundRoutes.map((r) => (
-                                <option key={r} value={r}>
-                                  {r}
-                                </option>
-                              ))}
-                            </select>
+                              onValueChange={setBindRoute}
+                              placeholder="— 选择路由 —"
+                              options={unboundRoutes}
+                            />
                           </div>
                           {unboundRoutes.length === 0 && (
                             <div className="text-xs text-slate-500">

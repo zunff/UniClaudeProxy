@@ -27,6 +27,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input, Label } from "@/components/ui/input";
+import { SelectField } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -336,15 +337,12 @@ function ProviderEditDialog({
           </div>
           <div>
             <Label>Provider 类型</Label>
-            <select
-              className="flex h-9 w-full rounded-md border border-brand-borderSubtle bg-slate-950/40 px-3 py-1 text-sm text-slate-100"
+            <SelectField
               value={providerType}
-              onChange={(e) => setProviderType(e.target.value)}
-            >
-              <option value="openai">openai</option>
-              <option value="gemini">gemini</option>
-              <option value="anthropic">anthropic</option>
-            </select>
+              onValueChange={setProviderType}
+              placeholder="选择 provider 类型"
+              options={["openai", "gemini", "anthropic"]}
+            />
           </div>
           <div>
             <Label>API Key</Label>
@@ -621,18 +619,12 @@ function BindPriceDialog({
         <div className="space-y-3">
           <div>
             <Label>选择价格表</Label>
-            <select
-              className="flex h-9 w-full rounded-md border border-brand-borderSubtle bg-slate-950/40 px-3 py-1 text-sm text-slate-100"
+            <SelectField
               value={selected}
-              onChange={(e) => setSelected(e.target.value)}
-            >
-              <option value="">— 选择价格表 —</option>
-              {priceNames.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
+              onValueChange={setSelected}
+              placeholder="— 选择价格表 —"
+              options={priceNames}
+            />
           </div>
           {priceNames.length === 0 && (
             <div className="text-xs text-slate-500">

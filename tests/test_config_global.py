@@ -33,6 +33,38 @@ class GlobalConfigSplitTests(unittest.TestCase):
         self.assertNotIn("models", global_out)
         self.assertNotIn("providers", global_out)
 
+    def test_price_bindings_stay_local(self):
+        merged = merge_config_files(
+            {
+                "server": {"host": "127.0.0.1", "port": 10388},
+                "upstream": {"enabled": True},
+                "billing": {"enabled": True, "db_file": "logs/billing.db"},
+            },
+            {
+                "models": {"claude-sonnet-5": "opencode/deepseek-v4-flash"},
+                "providers": {"opencode": {"provider_type": "openai", "base_url": "http://x"}},
+                "price_bindings": {
+                    "opencode/deepseek-v4-flash": "deepseek-v4-flash",
+                },
+            },
+        )
+        self.assertEqual(
+            merged["price_bindings"],
+            {"opencode/deepseek-v4-flash": "deepseek-v4-flash"},
+        )
+        self.assertEqual(
+            merged["billing"]["price_bindings"],
+            {"opencode/deepseek-v4-flash": "deepseek-v4-flash"},
+        )
+
+        global_out, local_out = split_config_files(merged)
+        self.assertNotIn("price_bindings", global_out)
+        self.assertNotIn("price_bindings", global_out.get("billing", {}))
+        self.assertEqual(
+            local_out["price_bindings"],
+            {"opencode/deepseek-v4-flash": "deepseek-v4-flash"},
+        )
+
     def test_local_overlay_keeps_old_all_in_one_config(self):
         merged = merge_config_files(
             {},

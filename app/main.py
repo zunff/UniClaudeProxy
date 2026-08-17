@@ -822,14 +822,18 @@ def _read_raw_prices() -> dict[str, Any]:
     """Read prices.json from disk as plain dict."""
     path = Path(prices_path())
     if not path.exists():
-        return {"prices": {}, "price_bindings": {}, "fx_to_cny": {}}
+        return {"prices": {}, "fx_to_cny": {}}
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+        if isinstance(data, dict):
+            return data
+        return {"prices": {}, "fx_to_cny": {}}
 
 
 def _write_raw_prices(raw: dict[str, Any]) -> None:
     """Atomic write prices.json + reload runtime config."""
-    _atomic_write_json(Path(prices_path()), raw)
+    to_save = {k: v for k, v in raw.items() if k != "price_bindings"}
+    _atomic_write_json(Path(prices_path()), to_save)
     reload_config()
 
 
@@ -859,7 +863,11 @@ async def admin_get_prices() -> dict[str, Any]:
     raw = _read_raw_config()
     prices_raw = _read_raw_prices()
     prices = prices_raw.get("prices", {})
-    price_bindings = prices_raw.get("price_bindings", {})
+    price_bindings = raw.get("price_bindings")
+    if price_bindings is None:
+        price_bindings = (raw.get("billing") or {}).get("price_bindings")
+    if not price_bindings:
+        price_bindings = prices_raw.get("price_bindings", {})
     fx_to_cny = prices_raw.get("fx_to_cny") or {}
     models = raw.get("models", {})
     providers = raw.get("providers", {})
@@ -920,26 +928,42 @@ async def admin_upsert_price(name: str, request: Request) -> dict[str, Any]:
 @app.delete("/api/billing/prices/{name}")
 async def admin_delete_price(name: str) -> dict[str, Any]:
     """Delete a named price table and remove all its route bindings."""
-    raw = _read_raw_prices()
-    prices = raw.get("prices", {})
+    prices_raw = _read_raw_prices()
+    prices = prices_raw.get("prices", {})
     if name not in prices:
         return JSONResponse(status_code=404, content={"ok": False, "error": f"price table '{name}' not found"})
     del prices[name]
-    # Remove all bindings pointing to this price table
-    bindings = raw.get("price_bindings", {})
+
+    # Remove all bindings pointing to this price table in config.json
+    cfg_raw = _read_raw_config()
+    bindings = cfg_raw.get("price_bindings")
+    if bindings is None:
+        bindings = cfg_raw.setdefault("price_bindings", {})
     to_remove = [k for k, v in bindings.items() if v == name]
     for k in to_remove:
         del bindings[k]
+
+    billing_bindings = (cfg_raw.get("billing") or {}).get("price_bindings", {})
+    for k in to_remove:
+        billing_bindings.pop(k, None)
+
+    # Also clean up if legacy bindings in prices.json
+    if "price_bindings" in prices_raw:
+        for k in to_remove:
+            prices_raw["price_bindings"].pop(k, None)
+
     try:
-        _write_raw_prices(raw)
+        _write_raw_prices(prices_raw)
+        if to_remove:
+            _write_raw_config(cfg_raw)
     except Exception as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
     return {"ok": True, "deleted": name, "removed_bindings": to_remove}
 
 
-@app.put("/api/billing/bindings/{route_key}")
+@app.put("/api/billing/bindings/{route_key:path}")
 async def admin_set_binding(route_key: str, request: Request) -> dict[str, Any]:
-    """Bind a provider/model_id route to a named price table.
+    """Bind a provider/model_id route to a named price table in config.json.
 
     Request body: { "price_name": string }
     """
@@ -952,28 +976,34 @@ async def admin_set_binding(route_key: str, request: Request) -> dict[str, Any]:
         return JSONResponse(status_code=400, content={"ok": False, "error": "price_name required"})
     if "/" not in route_key:
         return JSONResponse(status_code=400, content={"ok": False, "error": "route_key must be provider/model_id"})
-    raw = _read_raw_prices()
-    prices = raw.get("prices", {})
+    prices_raw = _read_raw_prices()
+    prices = prices_raw.get("prices", {})
     if price_name not in prices:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"price table '{price_name}' not found"})
-    raw.setdefault("price_bindings", {})[route_key] = price_name
+
+    cfg_raw = _read_raw_config()
+    cfg_raw.setdefault("price_bindings", {})[route_key] = price_name
+    if "billing" in cfg_raw and isinstance(cfg_raw["billing"], dict):
+        cfg_raw["billing"].setdefault("price_bindings", {})[route_key] = price_name
     try:
-        _write_raw_prices(raw)
+        _write_raw_config(cfg_raw)
     except Exception as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
     return {"ok": True, "route_key": route_key, "price_name": price_name}
 
 
-@app.delete("/api/billing/bindings/{route_key}")
+@app.delete("/api/billing/bindings/{route_key:path}")
 async def admin_delete_binding(route_key: str) -> dict[str, Any]:
-    """Remove a route-to-price-table binding."""
-    raw = _read_raw_prices()
-    bindings = raw.get("price_bindings", {})
-    if route_key not in bindings:
+    """Remove a route-to-price-table binding from config.json."""
+    cfg_raw = _read_raw_config()
+    bindings = cfg_raw.get("price_bindings", {})
+    billing_bindings = (cfg_raw.get("billing") or {}).get("price_bindings", {})
+    if route_key not in bindings and route_key not in billing_bindings:
         return JSONResponse(status_code=404, content={"ok": False, "error": f"route '{route_key}' has no binding"})
-    del bindings[route_key]
+    bindings.pop(route_key, None)
+    billing_bindings.pop(route_key, None)
     try:
-        _write_raw_prices(raw)
+        _write_raw_config(cfg_raw)
     except Exception as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
     return {"ok": True, "unbound": route_key}

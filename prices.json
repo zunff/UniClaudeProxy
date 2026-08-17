@@ -6,9 +6,26 @@
     "deepseek-v4-flash": {
       "currency": "CNY",
       "model": "deepseek-v4-flash",
-      "peak": { "input": 3.0, "input_cached": 0.10, "output": 9.0 },
-      "offpeak": { "input": 1.5, "input_cached": 0.05, "output": 4.5 },
-      "peak_hours": [[9, 12], [14, 18]]
+      "peak": {
+        "input": 3.0,
+        "input_cached": 0.1,
+        "output": 9.0
+      },
+      "offpeak": {
+        "input": 1.5,
+        "input_cached": 0.05,
+        "output": 4.5
+      },
+      "peak_hours": [
+        [
+          9,
+          12
+        ],
+        [
+          14,
+          18
+        ]
+      ]
     },
     "gemini-3.7-flash": {
       "currency": "USD",
@@ -17,10 +34,5 @@
       "input_cached": 0.075,
       "output": 3.75
     }
-  },
-  "price_bindings": {
-    "beyondpower/ds": "deepseek-v4-flash",
-    "opencode/deepseek-v4-flash": "deepseek-v4-flash",
-    "gemini/gemini-3.7-flash": "gemini-3.7-flash"
   }
 }

@@ -54,8 +54,8 @@ Configuration is split across three files to separate committable defaults, secr
 | File | Purpose | Committed to Git |
 |---|---|---|
 | `global.json` | Shared server settings, upstream timeouts/retries, billing DB retention | Yes |
-| `config.json` | Providers, API keys, model route mappings, disabled routes | No (gitignored) |
-| `prices.json` | Model price tables, route-to-price bindings, FX conversion rates | Optional |
+| `config.json` | Providers, API keys, model route mappings, disabled routes, route-to-price bindings (`price_bindings`) | No (gitignored) |
+| `prices.json` | Model price tables, FX conversion rates | Optional |
 | `config.example.json` | Template for single-route configuration | Yes |
 | `config.example.loadbalance.json` | Template for multi-key / weighted load balancing | Yes |
 

@@ -97,5 +97,9 @@
         }
       }
     }
+  },
+  "price_bindings": {
+    "deepseek/deepseek-chat": "deepseek-v3",
+    "deepseek/deepseek-reasoner": "deepseek-r1"
   }
 }

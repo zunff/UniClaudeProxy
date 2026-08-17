@@ -173,6 +173,7 @@ class AppConfig(BaseModel):
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
     billing: BillingConfig = Field(default_factory=BillingConfig)
+    price_bindings: dict[str, str] = Field(default_factory=dict)
 
 
 class ResolvedRoute:
@@ -320,7 +321,7 @@ def merge_config_files(
     """Merge commitable global.json with local config.json.
 
     global.json owns server / billing infra / upstream timeouts.
-    config.json owns models, providers, and upstream.disabled_routes.
+    config.json owns models, providers, price_bindings, and upstream.disabled_routes.
     Leftover global keys still present in config.json overlay for backward compat.
     """
     g_up = dict(global_raw.get("upstream") or {})
@@ -342,12 +343,18 @@ def merge_config_files(
         dict(local_raw.get("billing") or {}),
     )
 
+    price_bindings = local_raw.get("price_bindings")
+    if price_bindings is None:
+        price_bindings = (local_raw.get("billing") or {}).get("price_bindings") or {}
+    billing["price_bindings"] = dict(price_bindings)
+
     merged = dict(local_raw)
     merged["server"] = server
     merged["upstream"] = upstream
     merged["billing"] = billing
     merged["models"] = local_raw.get("models") or {}
     merged["providers"] = local_raw.get("providers") or {}
+    merged["price_bindings"] = dict(price_bindings)
     return merged
 
 
@@ -360,10 +367,14 @@ def split_config_files(merged: dict[str, Any]) -> tuple[dict[str, Any], dict[str
         "upstream": {k: up[k] for k in _GLOBAL_UPSTREAM_KEYS if k in up},
         "billing": {k: billing[k] for k in _GLOBAL_BILLING_KEYS if k in billing},
     }
+    price_bindings = merged.get("price_bindings")
+    if price_bindings is None:
+        price_bindings = billing.get("price_bindings") or {}
     local_out = {
         "upstream": {"disabled_routes": up.get("disabled_routes") or []},
         "models": merged.get("models") or {},
         "providers": merged.get("providers") or {},
+        "price_bindings": price_bindings,
     }
     return global_out, local_out
 
@@ -415,7 +426,9 @@ def load_config(path: Optional[str] = None) -> AppConfig:
     prices_data = _load_prices_file()
     billing = raw.get("billing", {})
     billing["prices"] = prices_data["prices"]
-    billing["price_bindings"] = prices_data["price_bindings"]
+    if not billing.get("price_bindings") and prices_data.get("price_bindings"):
+        billing["price_bindings"] = prices_data["price_bindings"]
+        raw["price_bindings"] = prices_data["price_bindings"]
     if prices_data.get("fx_to_cny"):
         billing["fx_to_cny"] = prices_data["fx_to_cny"]
     raw["billing"] = billing

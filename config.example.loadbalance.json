@@ -84,5 +84,11 @@
         }
       }
     }
+  },
+  "price_bindings": {
+    "glm1/glm-5": "glm-5",
+    "glm2/glm-5": "glm-5",
+    "deepseek/deepseek-chat": "deepseek-v3",
+    "deepseek/deepseek-reasoner": "deepseek-r1"
   }
 }

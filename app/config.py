@@ -91,6 +91,22 @@ class ServerConfig(BaseModel):
     local_only: bool = True
 
 
+class ProxyConfig(BaseModel):
+    """Outbound HTTP/HTTPS proxy placed in front of all upstream LLM traffic.
+
+    Attributes:
+        enabled: bool - Master switch. When False, requests go direct.
+        url: str | None - Proxy URL, e.g. "http://192.168.10.91:7890".
+    """
+
+    enabled: bool = False
+    url: Optional[str] = None
+
+    def httpx_setting(self) -> Optional[str]:
+        """Return the effective httpx proxy value, or None when disabled."""
+        return self.url if self.enabled and self.url else None
+
+
 class UpstreamStreamTimeoutConfig(BaseModel):
     """First-byte timeout config for streaming upstream requests."""
 
@@ -169,6 +185,7 @@ class AppConfig(BaseModel):
     """
 
     server: ServerConfig = Field(default_factory=ServerConfig)
+    proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     models: dict[str, str | list[str] | dict[str, int]] = Field(default_factory=dict)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
@@ -338,6 +355,10 @@ def merge_config_files(
         dict(global_raw.get("server") or {}),
         dict(local_raw.get("server") or {}),
     )
+    proxy = _overlay_dict(
+        dict(global_raw.get("proxy") or {}),
+        dict(local_raw.get("proxy") or {}),
+    )
     billing = _overlay_dict(
         dict(global_raw.get("billing") or {}),
         dict(local_raw.get("billing") or {}),
@@ -350,6 +371,7 @@ def merge_config_files(
 
     merged = dict(local_raw)
     merged["server"] = server
+    merged["proxy"] = proxy
     merged["upstream"] = upstream
     merged["billing"] = billing
     merged["models"] = local_raw.get("models") or {}
@@ -364,6 +386,7 @@ def split_config_files(merged: dict[str, Any]) -> tuple[dict[str, Any], dict[str
     billing = merged.get("billing") or {}
     global_out = {
         "server": merged.get("server") or {},
+        "proxy": merged.get("proxy") or {},
         "upstream": {k: up[k] for k in _GLOBAL_UPSTREAM_KEYS if k in up},
         "billing": {k: billing[k] for k in _GLOBAL_BILLING_KEYS if k in billing},
     }
@@ -446,6 +469,11 @@ def reload_config() -> AppConfig:
     global _config
     _config = None
     return load_config(_config_path)
+
+
+def proxy_setting() -> Optional[str]:
+    """Return the active outbound proxy URL, or None when disabled."""
+    return load_config().proxy.httpx_setting()
 
 
 def resolve_route(anthropic_model: str) -> ResolvedRoute:

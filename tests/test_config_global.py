@@ -65,6 +65,24 @@ class GlobalConfigSplitTests(unittest.TestCase):
             {"opencode/deepseek-v4-flash": "deepseek-v4-flash"},
         )
 
+    def test_proxy_lives_in_global_file(self):
+        merged = merge_config_files(
+            {
+                "server": {"host": "127.0.0.1", "port": 9223},
+                "proxy": {"enabled": True, "url": "http://192.168.10.91:7890"},
+            },
+            {
+                "models": {"claude-sonnet-5": "opencode/deepseek-v4-flash"},
+                "providers": {"opencode": {"provider_type": "openai", "base_url": "http://x"}},
+            },
+        )
+        self.assertEqual(merged["proxy"]["enabled"], True)
+        self.assertEqual(merged["proxy"]["url"], "http://192.168.10.91:7890")
+
+        global_out, local_out = split_config_files(merged)
+        self.assertEqual(global_out["proxy"], {"enabled": True, "url": "http://192.168.10.91:7890"})
+        self.assertNotIn("proxy", local_out)
+
     def test_local_overlay_keeps_old_all_in_one_config(self):
         merged = merge_config_files(
             {},

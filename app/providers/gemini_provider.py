@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from app.config import ResolvedRoute
+from app.config import ResolvedRoute, proxy_setting
 from app.converters.anthropic_to_gemini import to_gemini_request
 from app.models import AnthropicRequest
 from app.providers.retry_utils import (
@@ -21,6 +21,7 @@ logger = logging.getLogger("anyclaude.provider")
 debug_logger = logging.getLogger("anyclaude.debug")
 
 _client: httpx.AsyncClient | None = None
+_client_proxy: str | None = None
 
 
 async def get_client() -> httpx.AsyncClient:
@@ -29,11 +30,14 @@ async def get_client() -> httpx.AsyncClient:
     Returns:
         httpx.AsyncClient - The shared HTTP client instance.
     """
-    global _client
-    if _client is None or _client.is_closed:
+    global _client, _client_proxy
+    active_proxy = proxy_setting()
+    if _client is None or _client.is_closed or active_proxy != _client_proxy:
+        _client_proxy = active_proxy
         _client = httpx.AsyncClient(
             timeout=httpx.Timeout(300.0, connect=30.0),
             headers={"User-Agent": "OpenAI/Python 1.68.0"},
+            proxy=active_proxy,
         )
     return _client
 

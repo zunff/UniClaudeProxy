@@ -4,11 +4,17 @@ import { toast } from "sonner";
 // --- Types ---
 export interface RawAppConfig {
   server?: { host?: string; port?: string | number; local_only?: boolean };
+  proxy?: ProxySection;
   upstream?: unknown;
   models: Record<string, string | string[] | Record<string, number>>;
   providers: Record<string, ProviderConfig>;
   billing?: BillingSection;
   [k: string]: unknown;
+}
+
+export interface ProxySection {
+  enabled?: boolean;
+  url?: string;
 }
 
 export interface ProviderConfig {

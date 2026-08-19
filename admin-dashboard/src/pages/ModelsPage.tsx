@@ -281,6 +281,75 @@ function UpstreamConfigCard({
   );
 }
 
+function ProxyConfigCard({
+  config,
+  onSave,
+}: {
+  config: RawAppConfig;
+  onSave: (next: RawAppConfig) => Promise<boolean>;
+}) {
+  const [draft, setDraft] = useState<RawAppConfig>(config);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft(config);
+  }, [config]);
+
+  const proxy = draft.proxy ?? {};
+  const setProxy = (k: string, v: any) =>
+    setDraft({ ...draft, proxy: { ...proxy, [k]: v } });
+
+  const save = async () => {
+    setSaving(true);
+    await onSave(draft);
+    setSaving(false);
+  };
+
+  const dirty = JSON.stringify(draft.proxy) !== JSON.stringify(config.proxy);
+
+  return (
+    <Card className="border-fuchsia-500/20 hover:border-fuchsia-500/40">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2 text-fuchsia-300">
+            <Globe className="w-4 h-4 text-fuchsia-400" />
+            <span>出口代理配置</span>
+          </CardTitle>
+          <span className="px-2 py-0.5 rounded text-[10px] font-mono border border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-400 font-semibold">
+            global.json
+          </span>
+        </div>
+        <CardDescription>所有上游 LLM 请求经代理转发，直连或走代理可热切换</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <ConfigField
+          label="启用代理 (enabled)，关闭即直连"
+          type="checkbox"
+          value={proxy.enabled ?? false}
+          onChange={(v) => setProxy("enabled", v === "true")}
+        />
+        <ConfigField
+          label="代理地址 (URL)"
+          value={proxy.url ?? ""}
+          onChange={(v) => setProxy("url", v)}
+        />
+        <p className="text-[11px] text-slate-500 leading-relaxed">
+          支持 http:// 或 https://，例如 <code className="font-mono text-fuchsia-400/80">http://127.0.0.1:7890</code>。
+          修改保存后 watcher 热重载，下一次请求自动生效，无需重启。
+        </p>
+        {dirty && (
+          <div className="flex justify-end pt-2 border-t border-brand-borderSubtle">
+            <Button variant="primary" size="sm" onClick={save} disabled={saving}>
+              <Save className="w-3.5 h-3.5" />
+              {saving ? "保存中..." : "保存代理配置"}
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ProviderEditDialog({
   initialName,
   initialProvider,
@@ -1165,12 +1234,16 @@ export default function ModelsPage() {
       </div>
 
       {/* Global Config Cards */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
         <ServerConfigCard
           config={config ?? ({} as RawAppConfig)}
           onSave={saveConfig}
         />
         <UpstreamConfigCard
+          config={config ?? ({} as RawAppConfig)}
+          onSave={saveConfig}
+        />
+        <ProxyConfigCard
           config={config ?? ({} as RawAppConfig)}
           onSave={saveConfig}
         />

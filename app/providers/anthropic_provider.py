@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from app.config import ResolvedRoute
+from app.config import ResolvedRoute, proxy_setting
 from app.providers.retry_utils import (
     FirstByteTimeoutError,
     policy_from_route,
@@ -19,6 +19,7 @@ logger = logging.getLogger("anyclaude.provider")
 debug_logger = logging.getLogger("uniclaudeproxy.debug")
 
 _client: httpx.AsyncClient | None = None
+_client_proxy: str | None = None
 
 
 async def get_client() -> httpx.AsyncClient:
@@ -27,11 +28,14 @@ async def get_client() -> httpx.AsyncClient:
     Returns:
         httpx.AsyncClient - The shared HTTP client instance.
     """
-    global _client
-    if _client is None or _client.is_closed:
+    global _client, _client_proxy
+    active_proxy = proxy_setting()
+    if _client is None or _client.is_closed or active_proxy != _client_proxy:
+        _client_proxy = active_proxy
         _client = httpx.AsyncClient(
             timeout=httpx.Timeout(300.0, connect=30.0),
             headers={"User-Agent": "claude-cli/1.0.53 (external, cli)"},
+            proxy=active_proxy,
         )
     return _client
 

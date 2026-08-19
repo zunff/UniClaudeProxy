@@ -206,7 +206,9 @@ def from_openai_chat_response(
     choices = response_data.get("choices", [])
     if choices:
         choice = choices[0]
-        message = choice.get("message", {})
+        message = choice.get("message") or {}
+        if not isinstance(message, dict):
+            message = {}
         finish_reason = choice.get("finish_reason", "stop")
 
         reasoning_content = message.get("reasoning_content")
@@ -220,9 +222,17 @@ def from_openai_chat_response(
         if text:
             content_blocks.append({"type": "text", "text": text})
 
-        tool_calls = message.get("tool_calls", [])
+        # Compatible gateways often send "tool_calls": null instead of omitting it.
+        # dict.get("tool_calls", []) still returns None when the key is present.
+        tool_calls = message.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            tool_calls = []
         for tc in tool_calls:
-            func = tc.get("function", {})
+            if not isinstance(tc, dict):
+                continue
+            func = tc.get("function") or {}
+            if not isinstance(func, dict):
+                func = {}
             try:
                 args = json.loads(func.get("arguments", "{}"))
             except (json.JSONDecodeError, TypeError):
@@ -633,7 +643,9 @@ async def stream_openai_chat_to_anthropic(
                 continue
 
             choice = choices[0]
-            delta = choice.get("delta", {})
+            delta = choice.get("delta") or {}
+            if not isinstance(delta, dict):
+                delta = {}
             fr = choice.get("finish_reason")
             if fr:
                 finish_reason = fr
@@ -670,9 +682,20 @@ async def stream_openai_chat_to_anthropic(
                     "delta": {"type": "thinking_delta", "thinking": reasoning_content}
                 })
 
-            tool_calls = delta.get("tool_calls", [])
+            # Compatible gateways (e.g. OpenCode Zen) often send
+            # "tool_calls": null on content/finish chunks. dict.get default
+            # is not used when the key exists, so iterating would raise
+            # TypeError: 'NoneType' object is not iterable.
+            tool_calls = delta.get("tool_calls") or []
+            if not isinstance(tool_calls, list):
+                tool_calls = []
             for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
                 tc_index = tc.get("index", 0)
+                func = tc.get("function") or {}
+                if not isinstance(func, dict):
+                    func = {}
 
                 if tc_index not in tool_index_map:
                     if thinking_block_started:
@@ -684,7 +707,7 @@ async def stream_openai_chat_to_anthropic(
                         text_block_started = False
 
                     tool_id = tc.get("id", _generate_content_block_id())
-                    tool_name = tc.get("function", {}).get("name", "")
+                    tool_name = func.get("name", "")
                     block_idx = next_index
                     next_index += 1
                     tool_index_map[tc_index] = block_idx
@@ -698,7 +721,7 @@ async def stream_openai_chat_to_anthropic(
                     )
                     started = True
 
-                args_delta = tc.get("function", {}).get("arguments", "")
+                args_delta = func.get("arguments", "")
                 if args_delta:
                     tool_args_buffer[tc_index] += args_delta
                     yield _build_input_json_delta_event(

@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from app.config import ResolvedRoute
+from app.config import ResolvedRoute, proxy_setting
 from app.converters.anthropic_to_openai import (
     to_openai_chat_request,
     to_openai_responses_request,
@@ -25,6 +25,7 @@ logger = logging.getLogger("anyclaude.provider")
 debug_logger = logging.getLogger("anyclaude.debug")
 
 _client: httpx.AsyncClient | None = None
+_client_proxy: str | None = None
 
 
 def _should_include_reasoning_content(route: ResolvedRoute) -> bool:
@@ -96,14 +97,17 @@ async def get_client() -> httpx.AsyncClient:
     Returns:
         httpx.AsyncClient - The shared HTTP client instance.
     """
-    global _client
-    if _client is None or _client.is_closed:
+    global _client, _client_proxy
+    active_proxy = proxy_setting()
+    if _client is None or _client.is_closed or active_proxy != _client_proxy:
+        _client_proxy = active_proxy
         _client = httpx.AsyncClient(
             timeout=httpx.Timeout(300.0, connect=30.0),
             headers={
                 "User-Agent": "codex_cli_rs/0.47.0 (Windows 10.0.19043; x86_64)",
                 "originator": "codex_cli_rs",
             },
+            proxy=active_proxy,
         )
     return _client
 

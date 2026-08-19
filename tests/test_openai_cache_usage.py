@@ -126,6 +126,39 @@ class StreamCacheUsageTests(unittest.TestCase):
         ]))
         self.assertEqual(usage["cache_read_input_tokens"], 40)
 
+    def test_null_tool_calls_and_delta_do_not_crash(self):
+        events = self._run([
+            'data: {"choices":[{"delta":{"role":"assistant","content":"hi","tool_calls":null}}]}\n\n',
+            'data: {"choices":[{"delta":null,"finish_reason":"stop"}]}\n\n',
+            "data: [DONE]\n\n",
+        ])
+        types = []
+        for event in events:
+            for line in event.split("\n"):
+                if line.startswith("data: "):
+                    types.append(json.loads(line[6:]).get("type"))
+        self.assertIn("message_start", types)
+        self.assertIn("content_block_delta", types)
+        self.assertIn("message_delta", types)
+        self.assertIn("message_stop", types)
+        self.assertNotIn("error", types)
+
+
+class NullFieldCompatibilityTests(unittest.TestCase):
+    def test_non_stream_null_tool_calls(self):
+        resp = from_openai_chat_response(
+            {
+                "choices": [{
+                    "message": {"content": "ok", "tool_calls": None},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+            "claude-sonnet-5",
+        )
+        self.assertEqual(resp["content"], [{"type": "text", "text": "ok"}])
+        self.assertEqual(resp["stop_reason"], "end_turn")
+
 
 if __name__ == "__main__":
     unittest.main()

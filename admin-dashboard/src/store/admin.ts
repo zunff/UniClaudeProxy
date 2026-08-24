@@ -96,6 +96,7 @@ export interface RecentRecord {
   cost: number | null;
   currency: string | null;
   latency_ms: number | null;
+  ttfb_ms: number | null;
 }
 
 export interface StatsResponse {

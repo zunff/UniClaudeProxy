@@ -5,16 +5,16 @@
     "local_only": true
   },
   "proxy": {
-    "enabled": true,
+    "enabled": false,
     "url": "http://192.168.10.91:7890"
   },
   "upstream": {
     "enabled": false,
     "stream": {
-      "first_byte_timeout_ms": 8000
+      "first_byte_timeout_ms": 11000
     },
     "non_stream": {
-      "first_byte_timeout_ms": 20000
+      "first_byte_timeout_ms": 60000
     },
     "retry": {
       "max_attempts": 3,

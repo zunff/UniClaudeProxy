@@ -485,17 +485,18 @@ async def _handle_force_stream_non_streaming(
     original_stream = request.stream
     request.stream = True
     start = time.perf_counter()
+    ttfb_sink: dict[str, float] = {}
 
     try:
         if route.provider_type == "gemini":
             _pi = build_tool_param_index(request.tools) if request.tools else None
-            raw_stream = gemini_provider.send_streaming(request, route)
+            raw_stream = _track_first_byte(gemini_provider.send_streaming(request, route), ttfb_sink, start)
             converter = stream_gemini_to_anthropic(raw_stream, anthropic_model, param_index=_pi)
         elif route.use_responses:
-            raw_stream = openai_provider.send_streaming(request, route)
+            raw_stream = _track_first_byte(openai_provider.send_streaming(request, route), ttfb_sink, start)
             converter = stream_openai_responses_to_anthropic(raw_stream, anthropic_model, tool_mapping=route.tool_mapping or None)
         else:
-            raw_stream = openai_provider.send_streaming(request, route)
+            raw_stream = _track_first_byte(openai_provider.send_streaming(request, route), ttfb_sink, start)
             converter = stream_openai_chat_to_anthropic(raw_stream, anthropic_model)
 
         text_parts: list[str] = []
@@ -566,7 +567,7 @@ async def _handle_force_stream_non_streaming(
 
     except Exception as e:
         logger.error("Force-stream non-streaming error [provider=%s]: %s", route.provider_name, e)
-        billing.record(route, anthropic_model, None, is_stream=True, success=False, latency_ms=(time.perf_counter() - start) * 1000)
+        billing.record(route, anthropic_model, None, is_stream=True, success=False, latency_ms=(time.perf_counter() - start) * 1000, ttfb_ms=ttfb_sink.get("ttfb_ms"))
         return JSONResponse(
             status_code=502,
             content={
@@ -591,7 +592,7 @@ async def _handle_force_stream_non_streaming(
         "usage": usage,
     }
 
-    billing.record(route, anthropic_model, usage, is_stream=True, success=True, latency_ms=(time.perf_counter() - start) * 1000)
+    billing.record(route, anthropic_model, usage, is_stream=True, success=True, latency_ms=(time.perf_counter() - start) * 1000, ttfb_ms=ttfb_sink.get("ttfb_ms"))
     return JSONResponse(content=response_body)
 
 
@@ -689,6 +690,18 @@ async def _handle_non_streaming(
     return JSONResponse(content=anthropic_response)
 
 
+async def _track_first_byte(
+    stream: Any,
+    sink: dict[str, float],
+    start: float,
+) -> Any:
+    """Pass through an upstream byte stream, recording time-to-first-byte into sink."""
+    async for chunk in stream:
+        if "ttfb_ms" not in sink:
+            sink["ttfb_ms"] = (time.perf_counter() - start) * 1000
+        yield chunk
+
+
 async def _handle_streaming(
     request: Any,
     route: Any,
@@ -713,16 +726,17 @@ async def _handle_streaming(
         start = time.perf_counter()
         acc: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
         success = True
+        ttfb_sink: dict[str, float] = {}
         try:
             if route.provider_type == "gemini":
                 _pi = build_tool_param_index(request.tools) if request.tools else None
-                raw_stream = gemini_provider.send_streaming(request, route)
+                raw_stream = _track_first_byte(gemini_provider.send_streaming(request, route), ttfb_sink, start)
                 converter = stream_gemini_to_anthropic(raw_stream, anthropic_model, param_index=_pi)
             elif route.use_responses:
-                raw_stream = openai_provider.send_streaming(request, route)
+                raw_stream = _track_first_byte(openai_provider.send_streaming(request, route), ttfb_sink, start)
                 converter = stream_openai_responses_to_anthropic(raw_stream, anthropic_model, tool_mapping=route.tool_mapping or None)
             else:
-                raw_stream = openai_provider.send_streaming(request, route)
+                raw_stream = _track_first_byte(openai_provider.send_streaming(request, route), ttfb_sink, start)
                 converter = stream_openai_chat_to_anthropic(raw_stream, anthropic_model)
 
             async for event in converter:
@@ -746,7 +760,7 @@ async def _handle_streaming(
                 "cache_read_input_tokens": acc["cache_read"],
                 "cache_creation_input_tokens": acc["cache_creation"],
             }
-            billing.record(route, anthropic_model, usage, is_stream=True, success=success, latency_ms=(time.perf_counter() - start) * 1000)
+            billing.record(route, anthropic_model, usage, is_stream=True, success=success, latency_ms=(time.perf_counter() - start) * 1000, ttfb_ms=ttfb_sink.get("ttfb_ms"))
 
     return StreamingResponse(
         event_generator(),

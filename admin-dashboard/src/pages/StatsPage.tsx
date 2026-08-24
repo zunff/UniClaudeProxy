@@ -761,6 +761,7 @@ export default function StatsPage() {
                     <th className="px-3.5 py-2.5 font-semibold text-right text-purple-400">输出</th>
                     <th className="px-3.5 py-2.5 font-semibold text-right text-emerald-400">缓存命中</th>
                     <th className="px-3.5 py-2.5 font-semibold text-right text-amber-400">计费成本</th>
+                    <th className="px-3.5 py-2.5 font-semibold text-right">首字</th>
                     <th className="px-3.5 py-2.5 font-semibold text-right">耗时</th>
                     <th className="px-3.5 py-2.5 font-semibold">模式</th>
                   </tr>
@@ -814,6 +815,24 @@ export default function StatsPage() {
                         {r.cost != null
                           ? formatMoney(r.cost, r.currency || currency)
                           : "—"}
+                      </td>
+                      <td className="px-3.5 py-2.5 text-right tabular-nums">
+                        {r.ttfb_ms != null ? (
+                          <span
+                            className={cn(
+                              "px-1.5 py-0.5 rounded text-[11px] font-mono",
+                              r.ttfb_ms < 1000
+                                ? "text-emerald-400 bg-emerald-500/10"
+                                : r.ttfb_ms < 2500
+                                ? "text-amber-400 bg-amber-500/10"
+                                : "text-rose-400 bg-rose-500/10"
+                            )}
+                          >
+                            {r.ttfb_ms.toFixed(0)}ms
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
                       </td>
                       <td className="px-3.5 py-2.5 text-right tabular-nums">
                         {r.latency_ms != null ? (

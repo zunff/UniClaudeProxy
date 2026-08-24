@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS billing_records (
     cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
     cost REAL,
     currency TEXT,
-    latency_ms REAL
+    latency_ms REAL,
+    ttfb_ms REAL
 );
 CREATE INDEX IF NOT EXISTS idx_billing_date ON billing_records(date);
 CREATE INDEX IF NOT EXISTS idx_billing_model ON billing_records(provider, model);
@@ -113,11 +114,20 @@ def _init_db() -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA temp_store=MEMORY;")
     conn.executescript(_SCHEMA)
+    _migrate_schema(conn)
     _conn = conn
     _db_path = p
     _migrate_legacy_jsonl(conn)
     _start_cleanup_thread()
     return conn
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Idempotent column migration for databases created before ttfb_ms."""
+    with _lock:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(billing_records)")}
+        if "ttfb_ms" not in cols:
+            conn.execute("ALTER TABLE billing_records ADD COLUMN ttfb_ms REAL")
 
 
 def _billing_config():
@@ -180,6 +190,7 @@ def _migrate_legacy_jsonl(conn: sqlite3.Connection) -> None:
                     float(r["cost"]) if isinstance(r.get("cost"), (int, float)) else None,
                     r.get("currency"),
                     float(r["latency_ms"]) if r.get("latency_ms") is not None else None,
+                    float(r["ttfb_ms"]) if r.get("ttfb_ms") is not None else None,
                 ))
                 if len(rows) >= 500:
                     _bulk_insert(conn, rows)
@@ -204,8 +215,8 @@ def _bulk_insert(conn: sqlite3.Connection, rows: list[tuple]) -> None:
         """INSERT INTO billing_records
            (ts, date, provider, model, anthropic_model, is_stream, success,
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-            cache_miss_tokens, cost, currency, latency_ms)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            cache_miss_tokens, cost, currency, latency_ms, ttfb_ms)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         rows,
     )
 
@@ -306,8 +317,8 @@ def _compute_cost(
 _INSERT_SQL = """INSERT INTO billing_records
     (ts, date, provider, model, anthropic_model, is_stream, success,
      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-     cache_miss_tokens, cost, currency, latency_ms)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+     cache_miss_tokens, cost, currency, latency_ms, ttfb_ms)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 
 
 def record(
@@ -317,6 +328,7 @@ def record(
     is_stream: bool,
     success: bool,
     latency_ms: Optional[float] = None,
+    ttfb_ms: Optional[float] = None,
 ) -> None:
     """Record one request's usage. No-op when billing is disabled."""
     if not _is_enabled():
@@ -358,6 +370,7 @@ def record(
             cost,
             currency,
             round(latency_ms, 1) if latency_ms is not None else None,
+            round(ttfb_ms, 1) if ttfb_ms is not None else None,
         )
         conn = _init_db()
         with _lock:

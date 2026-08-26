@@ -808,6 +808,7 @@ async def stream_openai_responses_to_anthropic(
     started = False
     output_tokens = 0
     input_tokens = 0
+    cache_read_tokens = 0
     stop_reason = "end_turn"
 
     tool_blocks: dict[str, int] = {}
@@ -1039,6 +1040,7 @@ async def stream_openai_responses_to_anthropic(
                 usage = resp.get("usage", {})
                 input_tokens = usage.get("input_tokens", 0)
                 output_tokens = usage.get("output_tokens", 0)
+                cache_read_tokens = _extract_cache_read_tokens(usage)
                 status = resp.get("status", "completed")
                 stop_reason = _map_responses_status_to_stop_reason(status)
                 debug_logger.info("  [RESPONSES] completed status=%s stop_reason=%s tokens=%d/%d", status, stop_reason, input_tokens, output_tokens)
@@ -1093,5 +1095,10 @@ async def stream_openai_responses_to_anthropic(
         yield _build_content_block_start_event(content_index, "text")
         yield _build_content_block_stop_event(content_index)
 
-    yield _build_message_delta_event(stop_reason, output_tokens)
+    yield _build_message_delta_event(
+        stop_reason,
+        output_tokens,
+        input_tokens=input_tokens,
+        cache_read_tokens=cache_read_tokens,
+    )
     yield _build_message_stop_event()

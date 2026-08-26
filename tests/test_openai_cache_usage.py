@@ -6,6 +6,7 @@ from app.converters.openai_to_anthropic import (
     _extract_cache_read_tokens,
     from_openai_chat_response,
     stream_openai_chat_to_anthropic,
+    stream_openai_responses_to_anthropic,
 )
 
 
@@ -142,6 +143,57 @@ class StreamCacheUsageTests(unittest.TestCase):
         self.assertIn("message_delta", types)
         self.assertIn("message_stop", types)
         self.assertNotIn("error", types)
+
+
+class ResponsesStreamUsageTests(unittest.TestCase):
+    def _run(self, chunks: list[str]) -> list[str]:
+        async def gen():
+            for c in chunks:
+                yield c.encode("utf-8")
+
+        async def collect():
+            events = []
+            async for event in stream_openai_responses_to_anthropic(gen(), "claude-sonnet-5"):
+                events.append(event)
+            return events
+
+        return asyncio.run(collect())
+
+    def _delta_usage(self, events: list[str]) -> dict:
+        for event in events:
+            for line in event.split("\n"):
+                if not line.startswith("data: "):
+                    continue
+                data = json.loads(line[6:])
+                if data.get("type") == "message_delta":
+                    return data.get("usage") or {}
+        self.fail("no message_delta usage found")
+        return {}
+
+    def test_message_delta_forwards_input_and_cache_tokens(self):
+        usage = self._delta_usage(self._run([
+            'data: {"type":"response.output_text.delta","delta":"hi"}\n\n',
+            'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":100,"output_tokens":2,"input_tokens_details":{"cached_tokens":80}}}}\n\n',
+            "data: [DONE]\n\n",
+        ]))
+        self.assertEqual(usage["input_tokens"], 100)
+        self.assertEqual(usage["output_tokens"], 2)
+        self.assertEqual(usage["cache_read_input_tokens"], 80)
+
+    def test_message_delta_forwards_cache_from_completed_usage(self):
+        usage = self._delta_usage(self._run([
+            'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":50,"output_tokens":1,"input_tokens_details":{"cached_tokens":40}}}}\n\n',
+        ]))
+        self.assertEqual(usage["input_tokens"], 50)
+        self.assertEqual(usage["cache_read_input_tokens"], 40)
+
+    def test_message_delta_zero_usage_when_completed_reports_none(self):
+        usage = self._delta_usage(self._run([
+            'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n',
+        ]))
+        self.assertEqual(usage["input_tokens"], 0)
+        self.assertEqual(usage["output_tokens"], 0)
+        self.assertEqual(usage["cache_read_input_tokens"], 0)
 
 
 class NullFieldCompatibilityTests(unittest.TestCase):

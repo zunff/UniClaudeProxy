@@ -36,12 +36,43 @@ import {
 } from "@/components/ui/dialog";
 import { cn, formatMoney, toCny, DEFAULT_FX_TO_CNY } from "@/lib/utils";
 
-function normalizeEntry(entry?: PriceTableEntry | null) {
+const ISO_WEEKDAYS = [
+  { iso: 1, label: "一" },
+  { iso: 2, label: "二" },
+  { iso: 3, label: "三" },
+  { iso: 4, label: "四" },
+  { iso: 5, label: "五" },
+  { iso: 6, label: "六" },
+  { iso: 7, label: "日" },
+] as const;
+const ALL_WEEKDAYS = ISO_WEEKDAYS.map((d) => d.iso);
+const WEEKDAY_LABEL: Record<number, string> = Object.fromEntries(
+  ISO_WEEKDAYS.map((d) => [d.iso, d.label]),
+);
+
+function formatPeakWeekdays(days: number[]): string {
+  const unique = [...new Set(days.filter((d) => d >= 1 && d <= 7))].sort((a, b) => a - b);
+  if (!unique.length) return "无";
+  if (unique.length === 7) return "每天";
+  if (unique.join(",") === "1,2,3,4,5") return "周一至周五";
+  return unique.map((d) => WEEKDAY_LABEL[d]).join("");
+}
+
+function normalizePeakWeekdays(entry?: PriceTableEntry | null, isNew = false): number[] {
+  const raw = (entry?.peak_weekdays || []).filter((d) => d >= 1 && d <= 7);
+  if (raw.length) return [...new Set(raw)].sort((a, b) => a - b);
+  // New tables follow DeepSeek (weekdays only). Existing tables without the
+  // field keep "every day" so a save does not silently change weekend billing.
+  return isNew ? [1, 2, 3, 4, 5] : [...ALL_WEEKDAYS];
+}
+
+function normalizeEntry(entry?: PriceTableEntry | null, isNew = false) {
   if (!entry) {
     return {
       currency: "CNY",
       displayName: "",
       peakHours: "",
+      peakWeekdays: isNew ? [1, 2, 3, 4, 5] : [...ALL_WEEKDAYS],
       peak: { input: 0, cached: 0, output: 0 },
       offpeak: { input: 0, cached: 0, output: 0 },
     };
@@ -59,6 +90,7 @@ function normalizeEntry(entry?: PriceTableEntry | null) {
     currency,
     displayName,
     peakHours: pH,
+    peakWeekdays: normalizePeakWeekdays(entry, isNew),
     peak: {
       input: Number(peak.input) || 0,
       cached: Number(peak.input_cached ?? peak.input) || 0,
@@ -112,12 +144,14 @@ function PriceForm({
   onCancel: () => void;
 }) {
   const [name, setName] = useState(initialName);
-  const norm = normalizeEntry(initialEntry);
+  const isNew = !initialName;
+  const norm = normalizeEntry(initialEntry, isNew);
   const [currency, setCurrency] = useState(norm.currency);
   const [displayName, setDisplayName] = useState(norm.displayName);
   const [peakHours, setPeakHours] = useState(
     initialName ? norm.peakHours : norm.peakHours || "9-12, 14-18"
   );
+  const [peakWeekdays, setPeakWeekdays] = useState<number[]>(norm.peakWeekdays);
   const [peak, setPeak] = useState({
     input: norm.peak.input,
     cached: norm.peak.cached,
@@ -128,7 +162,6 @@ function PriceForm({
     cached: norm.offpeak.cached,
     output: norm.offpeak.output,
   });
-  const isNew = !initialName;
 
   const submit = () => {
     if (!name.trim()) {
@@ -155,6 +188,7 @@ function PriceForm({
       currency,
       model: displayName || undefined,
       peak_hours: ph,
+      peak_weekdays: [...peakWeekdays].sort((a, b) => a - b),
       peak: { input: peak.input, input_cached: peak.cached, output: peak.output },
       offpeak: { input: offpeak.input, input_cached: offpeak.cached, output: offpeak.output },
     };
@@ -207,13 +241,43 @@ function PriceForm({
         </div>
       </div>
 
-      <div>
-        <Label>高峰时段 (如 9-12, 14-18)</Label>
-        <Input
-          value={peakHours}
-          onChange={(e) => setPeakHours(e.target.value)}
-          placeholder="9-12, 14-18"
-        />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <Label>高峰时段 (如 9-12, 14-18)</Label>
+          <Input
+            value={peakHours}
+            onChange={(e) => setPeakHours(e.target.value)}
+            placeholder="9-12, 14-18"
+          />
+        </div>
+        <div>
+          <Label>高峰生效日（未选的日子全天闲时）</Label>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {ISO_WEEKDAYS.map(({ iso, label }) => {
+              const on = peakWeekdays.includes(iso);
+              return (
+                <button
+                  key={iso}
+                  type="button"
+                  onClick={() =>
+                    setPeakWeekdays((prev) =>
+                      on ? prev.filter((d) => d !== iso) : [...prev, iso].sort((a, b) => a - b),
+                    )
+                  }
+                  className={cn(
+                    "h-8 w-8 rounded-md text-xs font-mono font-semibold border transition-colors",
+                    on
+                      ? "bg-amber-500/20 text-amber-300 border-amber-500/50"
+                      : "bg-slate-950/40 text-slate-500 border-brand-borderSubtle hover:text-slate-300",
+                  )}
+                  title={`周${label}`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -512,7 +576,9 @@ export default function PricesPage() {
                       </div>
                       <CardDescription className="mt-1 font-mono text-xs text-slate-400">
                         {n.displayName || "未命名备注"} · 币种 {n.currency}
-                        {n.peakHours ? ` · 高峰: ${n.peakHours}` : ""}
+                        {n.peakHours
+                          ? ` · 高峰: ${formatPeakWeekdays(n.peakWeekdays)} ${n.peakHours}`
+                          : ""}
                       </CardDescription>
                     </div>
 

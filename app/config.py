@@ -150,8 +150,9 @@ class BillingConfig(BaseModel):
         prices: dict - Named price tables (key = price name, e.g.
             "deepseek-v4-flash"). Each entry may carry peak/offpeak tiers
             (per 1M tokens, in the table's own currency) plus peak_hours
-            (Beijing time). Official USD list prices stay in USD; billing
-            converts to CNY via fx_to_cny at record time.
+            (Beijing time) and optional peak_weekdays (ISO 1=Mon .. 7=Sun;
+            omitted = every day). Official USD list prices stay in USD;
+            billing converts to CNY via fx_to_cny at record time.
         price_bindings: dict - Maps "provider/model_id" route keys to price
             table names. Multiple routes can share the same price table.
             Routes without a binding record token usage but cost=None.

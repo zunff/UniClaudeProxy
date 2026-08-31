@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
         new_cfg = reload_config()
         logger.info("Hot-reloaded model mappings: %s", json.dumps(new_cfg.models, indent=2))
 
-    watcher = ConfigWatcher([config_path(), global_path()], _on_config_change)
+    watcher = ConfigWatcher([config_path(), global_path(), prices_path()], _on_config_change)
     watcher.start()
 
     yield

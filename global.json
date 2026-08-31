@@ -5,7 +5,7 @@
     "local_only": true
   },
   "proxy": {
-    "enabled": false,
+    "enabled": true,
     "url": "http://192.168.10.91:7890"
   },
   "upstream": {

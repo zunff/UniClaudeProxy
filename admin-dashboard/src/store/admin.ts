@@ -38,6 +38,8 @@ export interface PriceTableEntry {
   peak?: PriceTier;
   offpeak?: PriceTier;
   peak_hours?: number[][];
+  /** ISO weekdays that peak_hours apply to (1=Mon .. 7=Sun). Omitted = every day. */
+  peak_weekdays?: number[];
   // Flat-tier compatibility
   input?: number;
   input_cached?: number;

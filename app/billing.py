@@ -19,6 +19,8 @@ Design notes:
 - On first init, a legacy logs/billing.jsonl (if present) is migrated into
   the database and renamed to `<log_file>.migrated` so it won't be re-imported.
 - Peak/off-peak pricing is auto-selected by Beijing time (UTC+8).
+  Peak windows apply only on ``peak_weekdays`` (ISO 1=Mon .. 7=Sun);
+  omitted weekdays mean every day. DeepSeek weekends are therefore off-peak.
 - Daily aggregates are keyed by Beijing-date (YYYY-MM-DD) for logical grouping.
 """
 from __future__ import annotations
@@ -225,7 +227,25 @@ def _bulk_insert(conn: sqlite3.Connection, rows: list[tuple]) -> None:
 # Pricing
 # ---------------------------------------------------------------------------
 
-def _is_peak(peak_hours: list[list[int]], now_bj: datetime) -> bool:
+def _normalize_weekdays(raw: Any) -> Optional[set[int]]:
+    """Parse ISO weekdays (1=Mon .. 7=Sun).
+
+    None / omitted = every day is eligible for peak hours.
+    An explicit empty list = no peak days (always off-peak).
+    """
+    if raw is None or not isinstance(raw, (list, tuple)):
+        return None
+    return {int(d) for d in raw if isinstance(d, (int, float)) and 1 <= int(d) <= 7}
+
+
+def _is_peak(
+    peak_hours: list[list[int]],
+    now_bj: datetime,
+    peak_weekdays: Optional[list[int]] = None,
+) -> bool:
+    days = _normalize_weekdays(peak_weekdays)
+    if days is not None and now_bj.isoweekday() not in days:
+        return False
     if not peak_hours:
         return False
     h = now_bj.hour
@@ -266,11 +286,14 @@ def _compute_cost(
     cache_read: int,
     bindings: Optional[dict[str, str]] = None,
     fx_to_cny: Optional[dict[str, float]] = None,
+    now_bj: Optional[datetime] = None,
 ) -> tuple[Optional[float], Optional[str]]:
     """Compute cost (per 1M tokens) for a route, respecting peak/off-peak.
 
     Unit prices stay in the table's native currency (e.g. official USD).
     The returned cost is converted to CNY when an FX rate is available.
+    Peak vs off-peak is chosen from ``now_bj`` (Beijing time); callers that
+    omit it use the current clock.
     """
     if not prices:
         return None, None
@@ -288,7 +311,8 @@ def _compute_cost(
     offpeak = entry.get("offpeak")
     if peak and offpeak:
         peak_hours = entry.get("peak_hours") or [[9, 12], [14, 18]]
-        tier = peak if _is_peak(peak_hours, datetime.now(_BEIJING_TZ)) else offpeak
+        when = now_bj or datetime.now(_BEIJING_TZ)
+        tier = peak if _is_peak(peak_hours, when, entry.get("peak_weekdays")) else offpeak
     elif peak:
         tier = peak
     elif offpeak:
@@ -349,11 +373,11 @@ def record(
         model_id = getattr(route, "model_id", "") or ""
         key = f"{provider_name}/{model_id}" if provider_name else model_id
         fx_to_cny = getattr(cfg, "fx_to_cny", None) if cfg else None
-        cost, currency = _compute_cost(
-            prices, key, input_tokens, output_tokens, cache_read, bindings, fx_to_cny
-        )
-
         now_bj = datetime.now(_BEIJING_TZ)
+        cost, currency = _compute_cost(
+            prices, key, input_tokens, output_tokens, cache_read, bindings, fx_to_cny,
+            now_bj=now_bj,
+        )
         row = (
             now_bj.isoformat(timespec="seconds"),
             now_bj.strftime("%Y-%m-%d"),

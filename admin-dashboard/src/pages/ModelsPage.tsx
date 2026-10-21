@@ -370,6 +370,11 @@ function ProviderEditDialog({
   );
   const [apiKey, setApiKey] = useState(initialProvider?.api_key ?? "");
   const [baseUrl, setBaseUrl] = useState(initialProvider?.base_url ?? "");
+  const [headersStr, setHeadersStr] = useState(
+    initialProvider?.headers
+      ? JSON.stringify(initialProvider.headers, null, 2)
+      : ""
+  );
 
   const submit = async () => {
     if (!name.trim()) {
@@ -380,13 +385,49 @@ function ProviderEditDialog({
       toast.error("Provider 标识已存在");
       return;
     }
+
+    let parsedHeaders: Record<string, string> = {};
+    const headersTrimmed = headersStr.trim();
+    if (headersTrimmed) {
+      try {
+        const parsed = JSON.parse(headersTrimmed);
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          Array.isArray(parsed)
+        ) {
+          toast.error("headers 必须是 JSON 对象", {
+            description: '例如: {"x-opencode-session": "uniclaude-local-1"}',
+          });
+          return;
+        }
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v !== "string") {
+            toast.error("headers 的值必须是字符串", {
+              description: `键 "${k}" 的值类型无效`,
+            });
+            return;
+          }
+        }
+        parsedHeaders = parsed as Record<string, string>;
+      } catch (e: any) {
+        toast.error("headers JSON 格式错误", { description: e.message });
+        return;
+      }
+    }
+
     const provider: any = {
       provider_type: providerType,
       api_key: apiKey,
       base_url: baseUrl,
       models: initialProvider?.models ?? {},
     };
-    if (initialProvider?.headers) provider.headers = initialProvider.headers;
+    if (Array.isArray(initialProvider?.api_keys) && initialProvider.api_keys.length > 0) {
+      provider.api_keys = initialProvider.api_keys;
+    }
+    if (Object.keys(parsedHeaders).length > 0) {
+      provider.headers = parsedHeaders;
+    }
     const ok = await onSave(name.trim(), provider);
     if (ok) onClose();
   };
@@ -442,6 +483,18 @@ function ProviderEditDialog({
               onChange={(e) => setBaseUrl(e.target.value)}
               placeholder="https://api.openai.com/v1"
             />
+          </div>
+          <div>
+            <Label>附加请求头 (headers JSON)</Label>
+            <textarea
+              className="w-full h-20 rounded-lg border border-brand-borderSubtle bg-slate-900 p-2 text-xs font-mono text-slate-200 focus-visible:outline-none focus-visible:border-cyan-500"
+              placeholder='例如: {"x-opencode-session": "uniclaude-local-1"}'
+              value={headersStr}
+              onChange={(e) => setHeadersStr(e.target.value)}
+            />
+            <p className="mt-1 text-[10px] text-slate-500 normal-case tracking-normal">
+              会合并进上游请求。OpenCode Go 需配置 x-opencode-session。留空则不发送额外头。
+            </p>
           </div>
         </div>
         <DialogFooter>

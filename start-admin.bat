@@ -23,7 +23,7 @@ if not exist "node_modules" (
 echo.
 echo ===========================================
 echo   UniClaudeProxy Admin Dashboard
-echo   Frontend: http://127.0.0.1:5173
+echo   Frontend: http://127.0.0.1:5888
 echo   Proxy API (must be running): 127.0.0.1:10388
 echo ===========================================
 echo.

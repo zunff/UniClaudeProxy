@@ -9,7 +9,7 @@
     "url": "http://192.168.10.91:7890"
   },
   "upstream": {
-    "enabled": false,
+    "enabled": true,
     "stream": {
       "first_byte_timeout_ms": 11000
     },

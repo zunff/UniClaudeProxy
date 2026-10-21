@@ -1,4 +1,5 @@
 import json as _json
+import logging
 from typing import Any, Optional
 
 from app.utils.images import build_image_parts
@@ -9,6 +10,8 @@ from app.models import (
     AnthropicToolDef,
 )
 
+logger = logging.getLogger("anyclaude.converter")
+
 # Reasoning models (GLM, etc.) count thinking tokens against max_tokens.
 # Claude Code permission hooks often send tiny budgets like 64; without headroom
 # the model fills the quota with reasoning and returns truncated/empty content.
@@ -17,6 +20,13 @@ _REASONING_HEADROOM = 1024
 # Prefix for OpenAI Responses reasoning.encrypted_content stored in Anthropic
 # thinking.signature. Distinguishes our payload from Claude's native signatures.
 _OA_RS_SIG_PREFIX = "oa_rs:"
+
+# DeepSeek-style thinking upstreams reject any request carrying `tools` in which
+# an assistant message omits reasoning_content -- including turns the model never
+# reasoned about (some gateways drop the field intermittently). Replaying such a
+# history fails with HTTP 400 and never recovers, so a placeholder is substituted
+# to keep the conversation sendable.
+_REASONING_CONTENT_PLACEHOLDER = "(reasoning not available)"
 
 
 def _apply_reasoning_headroom(max_tok: int | None) -> int | None:
@@ -508,6 +518,51 @@ def _append_assistant_message(
     messages.append(msg)
 
 
+def should_backfill_reasoning_content(
+    request: AnthropicRequest,
+    messages: list[dict[str, Any]],
+) -> bool:
+    """Whether missing reasoning_content must be filled in for this history.
+
+    Only histories that are clearly reasoning-context ones qualify: the client
+    asked for thinking, or earlier assistant turns already carry
+    reasoning_content. Everything else is left untouched so that upstreams which
+    do not use the field never see it.
+
+    Args:
+        request: AnthropicRequest - The incoming Anthropic-formatted request.
+        messages: list[dict[str, Any]] - Converted OpenAI messages.
+
+    Returns:
+        bool - True when placeholder reasoning_content should be added.
+    """
+    thinking = request.thinking or {}
+    if str(thinking.get("type") or "").lower() == "enabled":
+        return True
+    if (request.output_config or {}).get("effort"):
+        return True
+    return any(msg.get("reasoning_content") for msg in messages)
+
+
+def backfill_reasoning_content(messages: list[dict[str, Any]]) -> int:
+    """Give every assistant message a reasoning_content value.
+
+    Args:
+        messages: list[dict[str, Any]] - Converted OpenAI messages, modified in place.
+
+    Returns:
+        int - Number of messages that were missing the field.
+    """
+    patched = 0
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        if not msg.get("reasoning_content"):
+            msg["reasoning_content"] = _REASONING_CONTENT_PLACEHOLDER
+            patched += 1
+    return patched
+
+
 def _build_tool_summary(tools: list[Any]) -> str:
     """Build a concise summary of available tools for injection into conversation.
 
@@ -753,6 +808,7 @@ def to_openai_chat_request(
     include_reasoning_content: bool = False,
     image_mode: str = "input_image",
     omit_tool_choice: bool = False,
+    reasoning_backfill: bool | None = None,
 ) -> dict[str, Any]:
     """Convert an Anthropic request to an OpenAI Chat Completions request body.
 
@@ -763,6 +819,8 @@ def to_openai_chat_request(
         include_reasoning_content: bool - Whether to forward reasoning/thinking blocks.
         image_mode: str - How to handle images: "input_image", "save_and_ref", or "strip".
         omit_tool_choice: Whether to omit tool_choice for incompatible upstreams.
+        reasoning_backfill: bool | None - Force (True) or suppress (False) placeholder
+            reasoning_content on assistant turns that have none. None auto-detects.
 
     Returns:
         dict[str, Any] - OpenAI Chat Completions compatible request body.
@@ -807,6 +865,17 @@ def to_openai_chat_request(
                     }
                 else:
                     body["tool_choice"] = "auto"
+
+    # Upstreams only enforce reasoning_content round-tripping once tools are in
+    # play, so non-tool requests keep their original shape.
+    backfill = reasoning_backfill
+    if backfill is None:
+        backfill = should_backfill_reasoning_content(request, body["messages"])
+    if backfill and include_reasoning_content and body.get("tools"):
+        backfilled = backfill_reasoning_content(body["messages"])
+        logger.info(
+            "Reasoning backfill: %d assistant message(s) had no reasoning_content", backfilled
+        )
 
     if request.stream:
         body["stream_options"] = {"include_usage": True}

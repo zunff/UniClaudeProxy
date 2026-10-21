@@ -7,14 +7,14 @@
       "currency": "CNY",
       "model": "deepseek-v4-flash",
       "peak": {
-        "input": 3.0,
-        "input_cached": 0.1,
-        "output": 9.0
+        "input": 2.0,
+        "input_cached": 0.04,
+        "output": 8.0
       },
       "offpeak": {
-        "input": 1.5,
-        "input_cached": 0.05,
-        "output": 4.5
+        "input": 1.0,
+        "input_cached": 0.02,
+        "output": 4.0
       },
       "peak_hours": [
         [
@@ -37,6 +37,13 @@
     "gemini-3.7-flash": {
       "currency": "USD",
       "model": "gemini-3.7-flash",
+      "input": 0.75,
+      "input_cached": 0.075,
+      "output": 3.75
+    },
+    "gemini-3.8-flash": {
+      "currency": "USD",
+      "model": "gemini-3.8-flash",
       "input": 0.75,
       "input_cached": 0.075,
       "output": 3.75

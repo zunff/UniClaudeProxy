@@ -184,6 +184,7 @@ class GeminiRoundTripTests(unittest.TestCase):
         flash = to_gemini_request(request, "gemini-3.5-flash")
         pro = to_gemini_request(request, "gemini-3.1-pro-preview")
         flash37 = to_gemini_request(request, "gemini-3.7-flash")
+        flash38 = to_gemini_request(request, "gemini-3.8-flash")
         self.assertEqual(
             flash["generationConfig"]["thinkingConfig"]["thinkingLevel"],
             "minimal",
@@ -196,6 +197,10 @@ class GeminiRoundTripTests(unittest.TestCase):
             flash37["generationConfig"]["thinkingConfig"]["thinkingLevel"],
             "low",
         )
+        self.assertEqual(
+            flash38["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "low",
+        )
 
     def test_maps_minimal_effort_away_from_unsupported_level(self):
         request = AnthropicRequest(
@@ -206,12 +211,17 @@ class GeminiRoundTripTests(unittest.TestCase):
         )
         flash35 = to_gemini_request(request, "gemini-3.5-flash")
         flash37 = to_gemini_request(request, "gemini-3.7-flash")
+        flash38 = to_gemini_request(request, "gemini-3.8-flash")
         self.assertEqual(
             flash35["generationConfig"]["thinkingConfig"]["thinkingLevel"],
             "minimal",
         )
         self.assertEqual(
             flash37["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "low",
+        )
+        self.assertEqual(
+            flash38["generationConfig"]["thinkingConfig"]["thinkingLevel"],
             "low",
         )
 

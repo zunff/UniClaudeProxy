@@ -53,11 +53,13 @@ def _log_request_body_summary(route: ResolvedRoute, body: dict[str, Any]) -> Non
                 history_reasoning_messages += 1
         include_reasoning_content = _should_include_reasoning_content(route)
         logger.info(
-            "Request summary [provider=%s]: messages=%d roles=%s history_reasoning_messages=%d include_reasoning_content=%s stream=%s",
+            "Request summary [provider=%s]: messages=%d roles=%s history_reasoning_messages=%d assistant_without_reasoning=%d tools=%d include_reasoning_content=%s stream=%s",
             route.provider_name,
             len(messages),
             role_counts,
             history_reasoning_messages,
+            _count_assistant_without_reasoning(messages),
+            len(body.get("tools") or []),
             include_reasoning_content,
             body.get("stream"),
         )
@@ -89,6 +91,36 @@ def _sample_message_meta(messages: Any, limit: int = 3) -> list[dict[str, Any]]:
             "content_len": content_len,
         })
     return sample
+
+
+def _count_assistant_without_reasoning(messages: Any) -> int:
+    """Count assistant messages sent without reasoning_content."""
+    if not isinstance(messages, list):
+        return 0
+    return sum(
+        1
+        for msg in messages
+        if isinstance(msg, dict)
+        and msg.get("role") == "assistant"
+        and not msg.get("reasoning_content")
+    )
+
+
+def _reasoning_diagnostics(route: ResolvedRoute, body: dict[str, Any]) -> dict[str, Any]:
+    """Describe reasoning-related request state so 400s can be explained.
+
+    Thinking upstreams (DeepSeek, GLM) reject a tools-carrying request when an
+    assistant message omits reasoning_content, and the upstream error text alone
+    does not show which of these knobs was in play.
+    """
+    messages = body.get("messages")
+    return {
+        "include_reasoning_content": _should_include_reasoning_content(route),
+        "reasoning_backfill": route.reasoning_content_backfill,
+        "tools": len(body.get("tools") or []),
+        "assistant_without_reasoning": _count_assistant_without_reasoning(messages),
+        "sample_messages": _sample_message_meta(messages, limit=3),
+    }
 
 
 async def get_client() -> httpx.AsyncClient:
@@ -152,6 +184,7 @@ def _build_request_body(request: AnthropicRequest, route: ResolvedRoute) -> dict
             include_reasoning_content=_should_include_reasoning_content(route),
             image_mode=route.image_mode,
             omit_tool_choice=route.omit_tool_choice,
+            reasoning_backfill=route.reasoning_content_backfill,
         )
     
     # Add extra_body parameters
@@ -198,12 +231,11 @@ async def send_non_streaming(
         )
         if resp.status_code >= 400:
             logger.error("Error response [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, resp.text[:1000])
-            if route.provider_name.lower().find("deepseek") >= 0 or route.endpoint_url.lower().find("deepseek") >= 0:
-                logger.error(
-                    "DeepSeek diagnostics: include_reasoning_content=%s sample_messages=%s",
-                    _should_include_reasoning_content(route),
-                    _sample_message_meta(body.get("messages", []), limit=3),
-                )
+            logger.error(
+                "Request diagnostics [provider=%s]: %s",
+                route.provider_name,
+                _reasoning_diagnostics(route, body),
+            )
         resp.raise_for_status()
         raw_text = resp.text.strip()
         if not raw_text:
@@ -231,12 +263,11 @@ async def send_non_streaming(
             if resp.status_code >= 400:
                 error_body = (await resp.aread()).decode("utf-8", errors="replace")
                 logger.error("Error response [provider=%s] (status=%d): %s", route.provider_name, resp.status_code, error_body[:1000])
-                if route.provider_name.lower().find("deepseek") >= 0 or route.endpoint_url.lower().find("deepseek") >= 0:
-                    logger.error(
-                        "DeepSeek diagnostics: include_reasoning_content=%s sample_messages=%s",
-                        _should_include_reasoning_content(route),
-                        _sample_message_meta(body.get("messages", []), limit=3),
-                    )
+                logger.error(
+                    "Request diagnostics [provider=%s]: %s",
+                    route.provider_name,
+                    _reasoning_diagnostics(route, body),
+                )
                 resp.raise_for_status()
 
             chunks: list[bytes] = []

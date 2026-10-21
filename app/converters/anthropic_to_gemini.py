@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from app.converters.gemini_to_anthropic import (
@@ -337,14 +338,20 @@ def _build_contents(request: AnthropicRequest) -> list[dict[str, Any]]:
     return contents
 
 
-# Gemini 3.7 Flash dropped MINIMAL (400 if set). 3.x Pro never supported it.
+# Gemini 3 Pro never supported MINIMAL; Flash dropped it as of 3.7 (400 if set).
+_GEMINI_MINIMAL_DROPPED_AT = (3, 7)
+
+
 def _gemini3_supports_minimal(model_id: str) -> bool:
     mid = model_id.lower()
     if "pro" in mid:
         return False
-    if "gemini-3.7" in mid:
+    match = re.search(r"gemini-(\d+)(?:\.(\d+))?", mid)
+    if not match:
+        # Unknown/aliased model: assume the newer restriction rather than risk a 400.
         return False
-    return True
+    version = (int(match.group(1)), int(match.group(2) or 0))
+    return version < _GEMINI_MINIMAL_DROPPED_AT
 
 
 def _gemini3_thinking_level(level: str, model_id: str) -> str:

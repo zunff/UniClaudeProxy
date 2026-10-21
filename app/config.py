@@ -28,6 +28,8 @@ class ModelConfig(BaseModel):
         system_replacements: dict[str, str] - String replacements applied to system prompt (key=target, value=replacement).
         extra_body: dict[str, Any] - Extra parameters to include in the request body.
         omit_tool_choice: bool - Omit tool_choice for upstreams that reject it.
+        reasoning_content_backfill: bool | None - Force/suppress placeholder reasoning_content
+            on assistant turns that carry none (None = auto-detect).
     """
 
     name: str
@@ -48,6 +50,7 @@ class ModelConfig(BaseModel):
     system_replacements: dict[str, str] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
     omit_tool_choice: bool = False
+    reasoning_content_backfill: Optional[bool] = None
 
 
 class ProviderConfig(BaseModel):
@@ -242,6 +245,7 @@ class ResolvedRoute:
         self.image_dir = model_config.image_dir
         self.extra_body = model_config.extra_body
         self.omit_tool_choice = model_config.omit_tool_choice
+        self.reasoning_content_backfill = model_config.reasoning_content_backfill
         self.upstream_config = upstream_config
 
         base = provider.base_url.rstrip("/")

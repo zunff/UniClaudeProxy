@@ -62,6 +62,8 @@ class ProviderConfig(BaseModel):
         base_url: str - Base URL for the provider's API.
         headers: dict[str, str] - Extra headers to include in requests.
         models: dict[str, ModelConfig] - Available models for this provider.
+        active_account: str - For browser-driven providers (deepseek-web): the
+            account id (one of api_keys) to drive; empty = default profile.
     """
 
     provider_type: str
@@ -70,6 +72,7 @@ class ProviderConfig(BaseModel):
     base_url: str
     headers: dict[str, str] = Field(default_factory=dict)
     models: dict[str, ModelConfig] = Field(default_factory=dict)
+    active_account: str = ""
 
     def resolved_api_keys(self) -> list[str]:
         """Return the list of API keys, falling back to single api_key for backward compat."""

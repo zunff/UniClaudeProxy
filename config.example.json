@@ -12,7 +12,8 @@
     "claude-sonnet-4-5-20250929": "glm/glm-4.6",
     "claude-opus-4-5": "glm/glm-4.7",
     "claude-opus-4-5-20251101": "glm/glm-4.7",
-    "claude-opus-4-5-thinking": "glm/glm-4.7"
+    "claude-opus-4-5-thinking": "glm/glm-4.7",
+    "deepseek-web-test": "deepseek-web/deepseek-web"
   },
   "providers": {
     "deepseek": {
@@ -94,6 +95,18 @@
             "You are Claude Code, Anthropic's official CLI for Claude.": "You are an advanced AI coding assistant integrated into a CLI tool.",
             "Claude Code": "the coding assistant"
           }
+        }
+      }
+    },
+    "deepseek-web": {
+      "provider_type": "deepseek-web",
+      "base_url": "https://chat.deepseek.com",
+      "api_keys": ["alice", "bob"],
+      "active_account": "alice",
+      "models": {
+        "deepseek-web": {
+          "name": "DeepSeek Web (free tier)",
+          "use_react": true
         }
       }
     }

@@ -3,6 +3,7 @@ import { NavKey, useAdmin } from "@/store/admin";
 import {
   Activity,
   Bot,
+  Globe,
   Database,
   GitBranch,
   Layers,
@@ -58,6 +59,15 @@ const items: {
     activeColor: "text-emerald-400",
     activeBg: "bg-emerald-500/10",
     activeBorder: "border-emerald-500/40",
+  },
+  {
+    key: "deepseek",
+    label: "DeepSeek 网页",
+    icon: Globe,
+    hint: "网页端登录与状态",
+    activeColor: "text-sky-400",
+    activeBg: "bg-sky-500/10",
+    activeBorder: "border-sky-500/40",
   },
 ];
 

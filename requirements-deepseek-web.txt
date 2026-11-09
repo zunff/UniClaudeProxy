@@ -1,0 +1,3 @@
+# Optional: only needed for the deepseek-web provider (drives chat.deepseek.com in a browser).
+# Uses your installed Chrome by default (DEEPSEEK_WEB_CHANNEL=chrome); otherwise run: playwright install chromium
+playwright>=1.40

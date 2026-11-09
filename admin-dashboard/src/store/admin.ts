@@ -110,7 +110,7 @@ export interface StatsResponse {
 }
 
 // --- Store ---
-export type NavKey = "stats" | "models" | "mappings" | "prices";
+export type NavKey = "stats" | "models" | "mappings" | "prices" | "deepseek";
 
 export type ModelRoute = string | string[] | Record<string, number>;
 

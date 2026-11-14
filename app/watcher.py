@@ -1,20 +1,30 @@
 import threading
+import time
 import logging
 from pathlib import Path
 
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent
+from watchdog.events import FileSystemEventHandler
 
 logger = logging.getLogger("anyclaude")
 
 
 class _ConfigReloadHandler(FileSystemEventHandler):
-    """Handles config file modification events and triggers reload callback.
+    """Handles config file changes and triggers the reload callback.
+
+    A config file is not only *modified* when it changes: the admin API and
+    :func:`app.config.atomic_write_json` write a sibling temp file and rename it
+    over the target, which the OS reports as a create/move. Handling only
+    ``on_modified`` silently missed every save made that way, so the proxy kept
+    running the old config until a restart.
 
     Attributes:
         watched_names: set[str] - Filenames that should trigger reload.
         callback: callable - Function to invoke on config change.
     """
+
+    #: A rename fires several events; collapse them into one reload.
+    DEBOUNCE_SECONDS = 0.3
 
     def __init__(self, watched_names: set[str], callback):
         """Initialize the handler.
@@ -26,25 +36,41 @@ class _ConfigReloadHandler(FileSystemEventHandler):
         self.watched_names = watched_names
         self.callback = callback
         self._lock = threading.Lock()
+        self._last_reload = 0.0
 
-    def on_modified(self, event: FileModifiedEvent):
-        """Handle file modification events, triggering reload for config changes.
-
-        Args:
-            event: FileModifiedEvent - The filesystem event.
-        """
-        if event.is_directory:
+    def _reload_if_watched(self, path) -> None:
+        """Reload when ``path`` is one of the watched files."""
+        if not path:
             return
+        event_path = Path(path).resolve()
+        if event_path.name not in self.watched_names:
+            return
+        with self._lock:
+            now = time.monotonic()
+            if now - self._last_reload < self.DEBOUNCE_SECONDS:
+                return
+            self._last_reload = now
+            logger.info("Config file changed: %s", event_path.name)
+            try:
+                self.callback()
+                logger.info("Config reloaded successfully")
+            except Exception as e:
+                logger.error("Failed to reload config: %s", e)
 
-        event_path = Path(event.src_path).resolve()
-        if event_path.name in self.watched_names:
-            with self._lock:
-                logger.info("Config file changed: %s", event_path.name)
-                try:
-                    self.callback()
-                    logger.info("Config reloaded successfully")
-                except Exception as e:
-                    logger.error("Failed to reload config: %s", e)
+    def on_modified(self, event) -> None:
+        """In-place write (editor save)."""
+        if not event.is_directory:
+            self._reload_if_watched(event.src_path)
+
+    def on_created(self, event) -> None:
+        """Atomic write: the temp file is renamed into place."""
+        if not event.is_directory:
+            self._reload_if_watched(event.src_path)
+
+    def on_moved(self, event) -> None:
+        """The rename half of an atomic write — the target is ``dest_path``."""
+        if not event.is_directory:
+            self._reload_if_watched(getattr(event, "dest_path", None))
 
 
 class ConfigWatcher:

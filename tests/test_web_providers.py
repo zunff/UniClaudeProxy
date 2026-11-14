@@ -535,3 +535,60 @@ class ProbeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ComposerSelectionTests(unittest.TestCase):
+    """Typing must reach the *visible* editor, not merely the first match.
+
+    A chat page keeps hidden editors of the same kind around (previous views,
+    overlays). Grabbing the wrong one makes fill() wait for visible+editable and
+    then swallow the prompt, so the turn hangs waiting for a stream that never
+    starts.
+    """
+
+    class _Node:
+        def __init__(self, visible):
+            self.visible = visible
+
+        async def is_visible(self):
+            return self.visible
+
+    class _Locator:
+        def __init__(self, nodes):
+            self.nodes = nodes
+
+        async def count(self):
+            return len(self.nodes)
+
+        def nth(self, index):
+            return self.nodes[index]
+
+        @property
+        def first(self):
+            return self.nodes[0]
+
+    class _Page:
+        def __init__(self, nodes):
+            self.nodes = nodes
+
+        def locator(self, selector):
+            return ComposerSelectionTests._Locator(self.nodes)
+
+    def _runtime(self):
+        from app.providers.web.engine import BrowserRuntime
+        from app.providers.web.sites.hailuo import SITE
+
+        return BrowserRuntime(SITE)
+
+    def test_skips_hidden_editors(self):
+        hidden = self._Node(False)
+        visible = self._Node(True)
+        page = self._Page([hidden, hidden, visible])
+        with unittest.mock.patch.dict(os.environ, {"HAILUO_WEB_COMPOSER_WAIT": "0"}):
+            self.assertIs(asyncio.run(self._runtime()._composer(page)), visible)
+
+    def test_falls_back_to_the_first_match_when_none_is_visible(self):
+        hidden = self._Node(False)
+        page = self._Page([hidden, self._Node(False)])
+        with unittest.mock.patch.dict(os.environ, {"HAILUO_WEB_COMPOSER_WAIT": "0"}):
+            self.assertIs(asyncio.run(self._runtime()._composer(page)), hidden)

@@ -46,6 +46,8 @@ debug_logger = logging.getLogger("anyclaude.debug")
 DRIVER_JS_PATH = Path(__file__).with_name("driver.js")
 PAGE_READY_TIMEOUT = 25.0
 CHALLENGE_WAIT_TIMEOUT = 240.0  # how long to wait in place for a captcha to be solved
+COMPOSER_WAIT = 10.0  # how long to look for a *visible* composer before using the first match
+SUBMIT_GRACE = 12.0  # how long to allow a stream to start when the prompt may not have been sent
 
 #: Site a driver message without ``__site`` belongs to (pre-multi-site pages).
 DEFAULT_SITE = "deepseek-web"
@@ -399,35 +401,68 @@ class BrowserRuntime:
             f"Check the selector {self.site.composer!r}."
         )
 
-    async def _submit(self, page: Any, prompt: str) -> None:
-        """Fill the composer and send with Enter, falling back to the send button."""
-        composer = page.locator(self.site.composer).first
-        # Rich-text editors (TipTap/ProseMirror contenteditable) only take input
-        # once focused, and some of them reject fill() outright.
-        with contextlib.suppress(Exception):
-            await composer.click(timeout=5000)
-        try:
-            await composer.fill(prompt, timeout=8000)
-        except Exception as e:
-            logger.info("%s fill() did not work (%s), inserting text directly", self.site.name, e)
-            await page.keyboard.insert_text(prompt)
-        await asyncio.sleep(0.5)  # let a rich-text editor commit the text before Enter
-        debug_logger.debug("%s composer before Enter: %r", self.site.name, (await self._composer_text(composer))[:60])
-        await composer.press("Enter")
-        await asyncio.sleep(0.8)
-        # The composer is often removed or replaced as soon as the turn starts,
-        # so this check must never block the turn.
-        leftover = await self._composer_text(composer)
-        if leftover.strip() and self.site.send_button_js:
-            logger.warning("%s composer not cleared after Enter, clicking send button", self.site.name)
+    async def _composer(self, page: Any) -> Any:
+        """Return the composer the user would type into, not just the first match.
+
+        ``page.locator(sel).first`` can land on a hidden editor of the same kind
+        (a chat page keeps previous/overlay editors around), and everything after
+        that fails silently: ``fill()`` waits for visible+editable, the fallback
+        text goes nowhere, and the turn then waits for a stream that never comes.
+        """
+        locator = page.locator(self.site.composer)
+        deadline = time.monotonic() + self.env_float("COMPOSER_WAIT", COMPOSER_WAIT)
+        while True:
+            count = await locator.count()
+            for index in range(min(count, 8)):
+                candidate = locator.nth(index)
+                with contextlib.suppress(Exception):
+                    if await candidate.is_visible():
+                        return candidate
+            if time.monotonic() > deadline:
+                return locator.first
+            await asyncio.sleep(0.3)
+
+    async def _submit(self, page: Any, prompt: str) -> bool:
+        """Fill the composer and send; return False when the page did not take it.
+
+        Two attempts: a rich-text editor can lose the text if it was still
+        hydrating when we typed, in which case a second pass succeeds.
+        """
+        composer: Any = None
+        for attempt in (1, 2):
+            composer = await self._composer(page)
+            # Rich-text editors (TipTap/ProseMirror contenteditable) only take
+            # input once focused, and some of them reject fill() outright.
+            with contextlib.suppress(Exception):
+                await composer.click(timeout=5000)
             try:
-                clicked = await page.evaluate(self.site.send_button_js)
-                logger.info("%s send button click -> %s", self.site.name, clicked)
+                await composer.fill(prompt, timeout=8000)
             except Exception as e:
-                logger.warning("%s send button click failed: %s", self.site.name, e)
+                logger.info("%s fill() did not work (%s); clicking and inserting text", self.site.name, e)
+                with contextlib.suppress(Exception):
+                    await composer.click(timeout=3000)
+                await page.keyboard.insert_text(prompt)
+            await asyncio.sleep(0.5)  # let the editor commit the text
+            if not (await self._composer_text(composer)).strip():
+                logger.warning("%s composer stayed empty after typing (attempt %d)", self.site.name, attempt)
+                continue
+            debug_logger.debug("%s composer before Enter: %r", self.site.name, prompt[:60])
+            await composer.press("Enter")
             await asyncio.sleep(0.8)
-            if (await self._composer_text(composer)).strip():
-                logger.warning("%s composer still holds the prompt after clicking send", self.site.name)
+            # The editor usually clears (or is replaced) as soon as the turn starts,
+            # so this check must never block the turn.
+            if not (await self._composer_text(composer)).strip():
+                return True
+            if self.site.send_button_js:
+                logger.warning("%s composer not cleared after Enter, clicking send button", self.site.name)
+                with contextlib.suppress(Exception):
+                    clicked = await page.evaluate(self.site.send_button_js)
+                    logger.info("%s send button click -> %s", self.site.name, clicked)
+                await asyncio.sleep(0.8)
+                if not (await self._composer_text(composer)).strip():
+                    return True
+            logger.warning("%s composer still holds the prompt after sending", self.site.name)
+        return False
 
     @staticmethod
     async def _composer_text(composer: Any) -> str:
@@ -553,10 +588,14 @@ class BrowserRuntime:
             got_text = False
             challenge_deadline: Optional[float] = None
             try:
-                await self._submit(page, prompt)
+                sent = await self._submit(page, prompt)
                 t_submit = time.monotonic()
                 while not finished:
                     limit = IDLE_TIMEOUT if got_text or t_first else FIRST_BYTE_TIMEOUT
+                    if not sent and not got_text and t_first is None:
+                        # The page may never have taken the prompt; fail fast
+                        # instead of sitting out the full first-byte timeout.
+                        limit = min(limit, SUBMIT_GRACE)
                     if challenge_deadline is not None:
                         limit = max(0.1, challenge_deadline - time.monotonic())
                     remaining_total = TOTAL_TIMEOUT - (time.monotonic() - t_submit)
@@ -568,6 +607,12 @@ class BrowserRuntime:
                         if challenge_deadline is not None:
                             self.guard.record(account, "captcha challenge left unsolved")
                             raise WebProviderError(self.site.challenge_message()) from None
+                        if not sent:
+                            raise WebProviderError(
+                                f"{self.site.label or self.site.name} did not accept the prompt: the composer "
+                                f"still held it after Enter and the send button (selector {self.site.composer!r}). "
+                                "Check the browser window — it may be showing a dialog the page needs."
+                            ) from None
                         raise WebProviderError(
                             f"Timed out waiting for the {self.site.name} stream "
                             "(no request seen; the page layout or login state may have changed)"

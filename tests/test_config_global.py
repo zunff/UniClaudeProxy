@@ -105,3 +105,26 @@ class GlobalConfigSplitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EndpointUrlTests(unittest.TestCase):
+    """Where ``base_url`` ends up — the passthrough type is ``claude``, not ``anthropic``."""
+
+    @staticmethod
+    def _route(provider_type, base_url, model="m"):
+        from app.config import ModelConfig, ProviderConfig, ResolvedRoute, UpstreamConfig
+
+        provider = ProviderConfig(provider_type=provider_type, base_url=base_url, models={})
+        return ResolvedRoute("p", provider, model, ModelConfig(name=model), UpstreamConfig())
+
+    def test_claude_passthrough_appends_messages(self):
+        route = self._route("claude", "https://api.xiaomimimo.com/anthropic/v1")
+        self.assertEqual(route.endpoint_url, "https://api.xiaomimimo.com/anthropic/v1/messages")
+
+    def test_openai_appends_chat_completions(self):
+        route = self._route("openai", "https://api.xiaomimimo.com/v1")
+        self.assertEqual(route.endpoint_url, "https://api.xiaomimimo.com/v1/chat/completions")
+
+    def test_trailing_slash_on_base_url_is_not_doubled(self):
+        route = self._route("openai", "https://x.test/v1/")
+        self.assertEqual(route.endpoint_url, "https://x.test/v1/chat/completions")

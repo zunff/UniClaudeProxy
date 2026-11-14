@@ -18,7 +18,8 @@
     "minimax-test": "minimax/MiniMax-M2",
     "zhipu-test": "zhipu/glm-4.5-flash",
     "modelscope-test": "modelscope/Qwen/Qwen3-235B-A22B",
-    "hailuo-web-test": "hailuo-web/hailuo"
+    "hailuo-web-test": "hailuo-web/hailuo",
+    "mimo-test": "mimo/mimo-v2.6-flash"
   },
   "providers": {
     "deepseek": {
@@ -229,6 +230,20 @@
         "hailuo": {
           "name": "海螺AI（网页端）",
           "use_react": true
+        }
+      }
+    },
+    "mimo": {
+      "provider_type": "openai",
+      "api_key": "your-xiaomimimo-api-key",
+      "base_url": "https://api.xiaomimimo.com/v1",
+      "headers": {},
+      "models": {
+        "mimo-v2.6-flash": {
+          "name": "小米 MiMo V2.6 Flash"
+        },
+        "mimo-v2.6-pro": {
+          "name": "小米 MiMo V2.6 Pro"
         }
       }
     }

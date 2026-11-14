@@ -241,6 +241,7 @@ ToS、也不会封号（最多被限速）。上面那张「官网 → 网页版
 
 | 站点 | base_url | 备注 |
 |---|---|---|
+| 小米 MiMo | `https://api.xiaomimimo.com/v1` | OpenAI 兼容；另有 Anthropic 兼容端点（见下） |
 | MiniMax（海螺AI） | `https://api.minimax.io/v1`（国内 `https://api.minimax.chat/v1`） | 海螺就是它的网页版 |
 | 阶跃星辰（跃问） | `https://api.stepfun.com/v1` | `step-3.7-flash` 很便宜 |
 | 百川智能（百小应） | `https://api.baichuan-ai.com/v1` | 注册送额度 |
@@ -250,7 +251,33 @@ ToS、也不会封号（最多被限速）。上面那张「官网 → 网页版
 | GitHub Models | `https://models.github.ai/inference` | 用 GitHub PAT 当 key |
 
 `config.example.json` 里 `minimax` / `stepfun` / `baichuan` / `siliconflow` / `zhipu` /
-`modelscope` 都是可直接改 key 的样板。
+`modelscope` / `mimo` 都是可直接改 key 的样板。
+
+#### 小米 MiMo（两个端点，按需选）
+
+| 用途 | base_url | provider_type |
+|---|---|---|
+| OpenAI 兼容（走本项目的转换层，支持多 key 轮询、缓存计费） | `https://api.xiaomimimo.com/v1` | `openai` |
+| Anthropic 原生（直通，保留 thinking / 工具调用原样） | `https://api.xiaomimimo.com/anthropic/v1` | `claude` |
+
+Anthropic 端点要自己带鉴权头（项目的直通模式不会替你加 `Authorization`）：
+
+```json
+"mimo-native": {
+  "provider_type": "claude",
+  "base_url": "https://api.xiaomimimo.com/anthropic/v1",
+  "headers": { "x-api-key": "your-xiaomimimo-api-key", "anthropic-version": "2023-06-01" },
+  "models": { "mimo-v2.6-pro": { "name": "小米 MiMo V2.6 Pro（原生）" } }
+}
+```
+
+> ⚠️ 买的是 **Token Plan 套餐**（`tp-` 开头的 key）的话，官方条款写明额度**只能用在编程
+> 工具里**，禁止拿去当自动化脚本 / 应用后端。要让 proxy 调它，请用按量计费（`sk-` 那类）
+> 的 key，并自己算好价格。
+>
+> 模型名：`mimo-v2.6-pro` / `mimo-v2.6-flash`（V2.5 系列已于 2026-10-21 下线）。
+> 价格按量计费、以控制台为准；`mimo-v2.6-flash` 的输出单价约 $0.28/M、pro 约 $0.87/M
+> （第三方口径，未含输入与缓存价）。
 
 **只有网页版、没有开放 API 的小站**（360 纳米AI、秘塔搜索、讯飞星火等）才需要走
 `web-http`；其中讯飞星火用 WebSocket，`web-http` 覆盖不了，得单独写传输层。

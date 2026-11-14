@@ -5,7 +5,7 @@ import PricesPage from "@/pages/PricesPage";
 import ModelsPage from "@/pages/ModelsPage";
 import MappingsPage from "@/pages/MappingsPage";
 import StatsPage from "@/pages/StatsPage";
-import DeepSeekWebPage from "@/pages/DeepSeekWebPage";
+import WebProvidersPage from "@/pages/WebProvidersPage";
 
 export default function App() {
   const { nav, fetchAll } = useAdmin();
@@ -19,7 +19,7 @@ export default function App() {
     models: <ModelsPage />,
     mappings: <MappingsPage />,
     prices: <PricesPage />,
-    deepseek: <DeepSeekWebPage />,
+    deepseek: <WebProvidersPage />,
   };
 
   return <AppShell>{page[nav]}</AppShell>;

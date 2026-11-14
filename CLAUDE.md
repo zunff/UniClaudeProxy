@@ -17,6 +17,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Run dev server**: `cd admin-dashboard && npm run dev` (or `start-admin.bat` / `./start-admin.sh`)
 - **Build**: `cd admin-dashboard && npm run build`
 
+### Web Providers (网页聊天站点)
+- **List sites**: `python -m app.providers.web.capture --list`
+- **Log in once (browser site)**: `python -m app.providers.web.capture deepseek-web --login`
+- **One turn / raw frame dump**: `python -m app.providers.web.capture <site> --prompt "hi" [--raw 2>frames.log]`
+- Docs: `docs/web-providers.md`
+
 ---
 
 ## Architecture Overview
@@ -38,6 +44,7 @@ UniClaudeProxy is a FastAPI proxy that sits between the Claude Code CLI (or any 
    - **OpenAI** (`openai_provider.py`): Uses `/v1/chat/completions` or `/v1/responses` (`responses: true`). Converts tool calls, thinking tokens (`<think>` tags or reasoning summaries), and usage cache statistics (`prompt_cache_hit_tokens`).
    - **Gemini** (`gemini_provider.py`): Uses native Google Gemini API (`generateContent` / `streamGenerateContent`). Handles `thoughtSignature` preservation across turns and auto-corrects parameter casing (camelCase to snake_case via `build_tool_param_index`).
    - **Claude** (`anthropic_provider.py`): Direct passthrough to upstream Anthropic-compatible endpoints.
+   - **Web sites** (`app/providers/web/`): consumer chat sites with no public API, via one abstraction and two transports — `browser` (Playwright drives the page, `driver.js` forwards the site's own stream) and `http` (the site's endpoint is called directly with a pasted token). Site adapters live in `web/sites/` (`deepseek.py`, `hailuo.py`, `custom.py`); `provider_type: "web-http"` declares a new niche site entirely in `config.json` (`web` block). All of them force ReAct, emit Anthropic SSE directly, and reuse the same `</tool_call>` truncation. Each captured stream gets its own parser instance (a JSON body left in one parser's buffer would otherwise swallow the next SSE frame). `app/providers/deepseek_web_provider.py` is now only a re-export shim.
    - **Retry & Timeouts** (`retry_utils.py`): Global first-byte timeouts (streaming/non-streaming) and retry attempts.
 5. **Streaming SSE / Response Translation**: Real-time conversion into Anthropic SSE events (`message_start`, `content_block_delta`, `message_delta`, `message_stop`).
 6. **Billing & Analytics (`app/billing.py`)**:

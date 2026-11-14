@@ -73,6 +73,16 @@ class ProviderConfig(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     models: dict[str, ModelConfig] = Field(default_factory=dict)
     active_account: str = ""
+    #: ``"name=value; name2=value2"`` injected into the browser profile before a
+    #: turn. Lets a browser-driven site start logged in without going through
+    #: its (often captcha-protected) login page.
+    cookies: str = ""
+    #: JSON object of localStorage entries seeded before a browser turn. Some
+    #: sites keep their access token there (a cookie alone does not log them in).
+    storage: str = ""
+    #: Protocol declaration for ``provider_type: "web-http"`` (see
+    #: docs/web-providers.md): url/method/headers/body + stream JSON paths.
+    web: dict[str, Any] = Field(default_factory=dict)
 
     def resolved_api_keys(self) -> list[str]:
         """Return the list of API keys, falling back to single api_key for backward compat."""
@@ -551,3 +561,68 @@ def resolve_route(anthropic_model: str) -> ResolvedRoute:
         model_config=model_cfg,
         upstream_config=cfg.upstream,
     )
+
+
+# ---------------------------------------------------------------------------
+# Writing config.json back (dashboard edits, preset CLI).
+# ---------------------------------------------------------------------------
+
+
+def atomic_write_json(path: Any, raw: dict[str, Any]) -> None:
+    """Atomic JSON write, keeping a ``.bak`` of the previous file."""
+    import shutil
+
+    path = Path(path)
+    backup = path.with_suffix(path.suffix + ".bak")
+    if path.exists():
+        try:
+            shutil.copy2(path, backup)
+        except OSError:
+            pass
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    tmp.replace(path)
+
+
+def read_config_raw(path: Optional[str] = None) -> dict[str, Any]:
+    """Read config.json as a plain dict (``{}`` when missing or malformed)."""
+    target = Path(path or config_path())
+    if not target.exists():
+        return {}
+    with open(target, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data if isinstance(data, dict) else {}
+
+
+def write_config_raw(data: dict[str, Any], path: Optional[str] = None) -> None:
+    """Write config.json atomically, then hot-reload the runtime config."""
+    atomic_write_json(path or config_path(), data)
+    reload_config()
+
+
+def read_provider_block(name: str, path: Optional[str] = None) -> dict[str, Any]:
+    """Return one provider block from config.json (``{}`` when absent)."""
+    providers = read_config_raw(path).get("providers") or {}
+    block = providers.get(name) if isinstance(providers, dict) else None
+    return block if isinstance(block, dict) else {}
+
+
+def write_provider_block(name: str, block: dict[str, Any], path: Optional[str] = None) -> None:
+    """Validate and write back one provider block, then hot-reload config.
+
+    Validating first means a malformed provider can never land in config.json
+    and break the running proxy on reload.
+    """
+    try:
+        ProviderConfig(**block)
+    except Exception as e:
+        raise ValueError(f"{name} provider block is invalid: {e}") from e
+
+    data = read_config_raw(path)
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        providers = data["providers"] = {}
+    providers[name] = block
+    write_config_raw(data, path)

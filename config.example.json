@@ -13,7 +13,12 @@
     "claude-opus-4-5": "glm/glm-4.7",
     "claude-opus-4-5-20251101": "glm/glm-4.7",
     "claude-opus-4-5-thinking": "glm/glm-4.7",
-    "deepseek-web-test": "deepseek-web/deepseek-web"
+    "deepseek-web-test": "deepseek-web/deepseek-web",
+    "niche-web-test": "niche-web/their-model",
+    "minimax-test": "minimax/MiniMax-M2",
+    "zhipu-test": "zhipu/glm-4.5-flash",
+    "modelscope-test": "modelscope/Qwen/Qwen3-235B-A22B",
+    "hailuo-web-test": "hailuo-web/hailuo"
   },
   "providers": {
     "deepseek": {
@@ -101,11 +106,128 @@
     "deepseek-web": {
       "provider_type": "deepseek-web",
       "base_url": "https://chat.deepseek.com",
-      "api_keys": ["alice", "bob"],
+      "api_keys": [
+        "alice",
+        "bob"
+      ],
       "active_account": "alice",
       "models": {
         "deepseek-web": {
           "name": "DeepSeek Web (free tier)",
+          "use_react": true
+        }
+      }
+    },
+    "niche-web": {
+      "provider_type": "web-http",
+      "base_url": "https://chat.example.com",
+      "api_key": "the-token-the-site-sends",
+      "web": {
+        "url": "https://chat.example.com/api/chat",
+        "method": "POST",
+        "headers": {
+          "X-Version": "1.0"
+        },
+        "body": {
+          "model": "{{model}}",
+          "stream": true,
+          "messages": "{{messages}}"
+        },
+        "stream": {
+          "frames": "sse",
+          "text": "choices.0.delta.content",
+          "thinking": "choices.0.delta.reasoning_content",
+          "done_on": "choices.0.finish_reason",
+          "chat_id": "id"
+        }
+      },
+      "models": {
+        "their-model": {
+          "name": "小众站点模型",
+          "upstream_model_id": "their-model"
+        }
+      }
+    },
+    "minimax": {
+      "provider_type": "openai",
+      "api_key": "your-minimax-api-key",
+      "base_url": "https://api.minimax.io/v1",
+      "headers": {},
+      "models": {
+        "MiniMax-M2": {
+          "name": "MiniMax M2 (海螺/官方 API)"
+        }
+      }
+    },
+    "stepfun": {
+      "provider_type": "openai",
+      "api_key": "your-stepfun-api-key",
+      "base_url": "https://api.stepfun.com/v1",
+      "headers": {},
+      "models": {
+        "step-3.7-flash": {
+          "name": "阶跃 Step 3.7 Flash (官方 API)"
+        }
+      }
+    },
+    "baichuan": {
+      "provider_type": "openai",
+      "api_key": "your-baichuan-api-key",
+      "base_url": "https://api.baichuan-ai.com/v1",
+      "headers": {},
+      "models": {
+        "Baichuan4-Air": {
+          "name": "百川 4 Air (百小应同源, 官方 API)"
+        }
+      }
+    },
+    "siliconflow": {
+      "provider_type": "openai",
+      "api_key": "your-siliconflow-api-key",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "headers": {},
+      "models": {
+        "Qwen/Qwen3-32B": {
+          "name": "硅基流动 Qwen3 32B (有免费额度)"
+        }
+      }
+    },
+    "zhipu": {
+      "provider_type": "openai",
+      "api_key": "your-bigmodel-api-key",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "headers": {},
+      "models": {
+        "glm-4.5-flash": {
+          "name": "GLM-4.5 Flash (免费模型, 2000万 tokens 永久)"
+        },
+        "glm-4.6": {
+          "name": "GLM-4.6"
+        }
+      }
+    },
+    "modelscope": {
+      "provider_type": "openai",
+      "api_key": "your-modelscope-access-token",
+      "base_url": "https://api-inference.modelscope.cn/v1",
+      "headers": {},
+      "models": {
+        "Qwen/Qwen3-235B-A22B": {
+          "name": "Qwen3 235B A22B (魔搭, 每天 2000 次)"
+        },
+        "deepseek-ai/DeepSeek-V3.1": {
+          "name": "DeepSeek V3.1 (魔搭)"
+        }
+      }
+    },
+    "hailuo-web": {
+      "provider_type": "hailuo-web",
+      "base_url": "https://hailuoai.com",
+      "api_key": "",
+      "cookies": "从浏览器里复制的 cookie 整段（可选）",
+      "models": {
+        "hailuo": {
+          "name": "海螺AI（网页端）",
           "use_react": true
         }
       }

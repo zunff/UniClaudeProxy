@@ -870,6 +870,35 @@ function ProviderCard({
   onDeleteModel: (providerName: string, modelId: string) => void;
 }) {
   const [showKey, setShowKey] = useState(false);
+  const [testing, setTesting] = useState<string | null>(null);
+
+  const testModel = async (modelId: string) => {
+    setTesting(modelId);
+    const toastId = toast.loading(`测试 ${name}/${modelId} …`);
+    try {
+      const res = await fetch(`/api/providers/${encodeURIComponent(name)}/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelId }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast.success(`${modelId} 可用 · ${data.latency_ms}ms`, {
+          id: toastId,
+          description: data.text,
+        });
+      } else {
+        toast.error(`${modelId} 测试失败`, {
+          id: toastId,
+          description: String(data.error ?? "未知错误").slice(0, 300),
+        });
+      }
+    } catch (e) {
+      toast.error("测试失败", { id: toastId, description: String(e) });
+    } finally {
+      setTesting(null);
+    }
+  };
   const models = provider.models ?? {};
   const apiKey = provider.api_key ?? "";
   const type = provider.provider_type ?? "openai";
@@ -1022,6 +1051,16 @@ function ProviderCard({
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 text-slate-400 hover:text-emerald-300"
+                      onClick={() => testModel(modelId)}
+                      disabled={testing === modelId}
+                      title="发一条 ping 走真实上游，测这个 key + 模型能不能用"
+                    >
+                      <Zap className={cn("w-3.5 h-3.5", testing === modelId && "animate-pulse text-emerald-300")} />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"

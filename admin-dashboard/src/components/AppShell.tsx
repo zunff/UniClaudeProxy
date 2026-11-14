@@ -62,9 +62,9 @@ const items: {
   },
   {
     key: "deepseek",
-    label: "DeepSeek 网页",
+    label: "网页端",
     icon: Globe,
-    hint: "网页端登录与状态",
+    hint: "各网页端登录 / token 状态",
     activeColor: "text-sky-400",
     activeBg: "bg-sky-500/10",
     activeBorder: "border-sky-500/40",

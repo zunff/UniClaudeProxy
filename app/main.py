@@ -1,6 +1,6 @@
+import asyncio
 import json
 import logging
-import shutil
 import time
 import traceback
 import uuid
@@ -9,12 +9,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import (
     AppConfig,
+    ResolvedRoute,
+    atomic_write_json,
     ProviderConfig,
     config_path,
     global_path,
@@ -24,6 +26,8 @@ from app.config import (
     resolve_route,
     merge_config_files,
     split_config_files,
+    read_provider_block,
+    write_provider_block,
 )
 from app import billing
 from app.watcher import ConfigWatcher
@@ -38,7 +42,8 @@ from app.converters.openai_to_anthropic import (
     stream_openai_chat_to_anthropic,
     stream_openai_responses_to_anthropic,
 )
-from app.providers import anthropic_provider, deepseek_web_provider, gemini_provider, openai_provider
+from app.providers import anthropic_provider, gemini_provider, openai_provider
+from app.providers import web as web_providers
 from app.react import transform_request as react_transform_request
 from app.react import transform_response as react_transform_response
 from app.react import transform_stream as react_transform_stream
@@ -85,7 +90,7 @@ async def lifespan(app: FastAPI):
     await openai_provider.close_client()
     await gemini_provider.close_client()
     await anthropic_provider.close_client()
-    await deepseek_web_provider.close()
+    await web_providers.close()
     logger.info("UniClaudeProxy shutdown complete")
 
 
@@ -229,8 +234,8 @@ async def create_message(request: Request) -> Any:
                     system[idx] = {**block, "text": txt}
             body["system"] = system
 
-    # The deepseek-web provider has no native tool calling, so it always goes through ReAct.
-    use_react = route.model_config.use_react or route.provider_type == "deepseek-web"
+    # Web providers (browser/HTTP chat sites) have no native tool calling, so they always go through ReAct.
+    use_react = route.model_config.use_react or web_providers.is_web_provider(route.provider_type)
     if use_react:
         body = react_transform_request(body)
 
@@ -401,9 +406,9 @@ async def _handle_react(
                 str - Anthropic-formatted SSE event strings with tool_use blocks.
             """
             try:
-                if route.provider_type == "deepseek-web":
+                if web_providers.is_web_provider(route.provider_type):
                     # Already yields Anthropic SSE strings; no converter needed.
-                    upstream = deepseek_web_provider.send_streaming(request, route)
+                    upstream = web_providers.send_streaming(request, route)
                 elif route.provider_type == "gemini":
                     _pi = build_tool_param_index(request.tools) if request.tools else None
                     raw_stream = gemini_provider.send_streaming(request, route)
@@ -437,8 +442,8 @@ async def _handle_react(
         )
 
     try:
-        if route.provider_type == "deepseek-web":
-            anthropic_response = await deepseek_web_provider.send_non_streaming(request, route)
+        if web_providers.is_web_provider(route.provider_type):
+            anthropic_response = await web_providers.send_non_streaming(request, route)
             anthropic_response["model"] = anthropic_model
         elif route.provider_type == "gemini":
             raw_response = await gemini_provider.send_non_streaming(request, route)
@@ -797,21 +802,6 @@ async def health_check() -> dict[str, str]:
 _BEIJING_TZ_ADMIN = timezone(timedelta(hours=8))
 
 
-def _atomic_write_json(path: Path, raw: dict[str, Any]) -> None:
-    """Atomic write a JSON object, keeping a .bak of the previous file."""
-    backup = path.with_suffix(path.suffix + ".bak")
-    if path.exists():
-        try:
-            shutil.copy2(path, backup)
-        except OSError:
-            pass
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(raw, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    tmp.replace(path)
-
-
 def _read_raw_config() -> dict[str, Any]:
     """Read merged global.json + config.json for the dashboard."""
     cfg = Path(config_path())
@@ -836,8 +826,8 @@ def _write_raw_config(raw: dict[str, Any]) -> None:
     # Validate the merged view so neither file can be written in a broken state.
     AppConfig(**raw)
     global_out, local_out = split_config_files(raw)
-    _atomic_write_json(Path(global_path()), global_out)
-    _atomic_write_json(Path(config_path()), local_out)
+    atomic_write_json(Path(global_path()), global_out)
+    atomic_write_json(Path(config_path()), local_out)
     reload_config()
 
 
@@ -856,63 +846,139 @@ def _read_raw_prices() -> dict[str, Any]:
 def _write_raw_prices(raw: dict[str, Any]) -> None:
     """Atomic write prices.json + reload runtime config."""
     to_save = {k: v for k, v in raw.items() if k != "price_bindings"}
-    _atomic_write_json(Path(prices_path()), to_save)
+    atomic_write_json(Path(prices_path()), to_save)
     reload_config()
 
 
-def _read_deepseek_web_provider() -> dict[str, Any]:
-    """Return the raw deepseek-web provider block from config.json (mutable)."""
-    cfg = Path(config_path())
-    if not cfg.exists():
-        return {}
-    with open(cfg, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        return {}
-    providers = data.get("providers") or {}
-    block = providers.get("deepseek-web")
-    return block if isinstance(block, dict) else {}
+def _read_provider_block(name: str) -> dict[str, Any]:
+    """Return the raw provider block ``name`` from config.json (mutable)."""
+    return read_provider_block(name)
 
 
-def _write_deepseek_web_provider(block: dict[str, Any]) -> None:
-    """Write back only the deepseek-web provider block, then hot-reload config.
+def _write_provider_block(name: str, block: dict[str, Any]) -> None:
+    """Write back only one provider block, then hot-reload config."""
+    write_provider_block(name, block)
 
-    Validates the block before writing, so a malformed provider can never land
-    in config.json and break the running proxy on reload.
+
+def _require_web_provider(name: str) -> None:
+    """Raise 404 unless ``name`` is a configured web provider."""
+    if web_providers.site_for_provider(name) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{name} is not a web provider (check provider_type in config.json)",
+        )
+
+
+@app.get("/api/web/sites")
+async def admin_web_sites() -> dict[str, Any]:
+    """List configured web providers plus the sites that can be added in one click."""
+    return {
+        "sites": web_providers.configured_providers(),
+        "templates": web_providers.site_templates(),
+    }
+
+
+@app.post("/api/web/{name}/cookies")
+async def admin_web_set_cookies(name: str, request: Request) -> Any:
+    """Store a cookie header on a web provider (seeds a browser site's login).
+
+    Body: ``{"cookies": "refresh_token=...; cna=..."}`` — copied from a normal
+    browser's devtools. Used by sites whose login page is captcha-protected.
+    """
+    _require_web_provider(name)
+    try:
+        body = await request.json()
+        cookies = str((body or {}).get("cookies") or "").strip()
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
+    storage = ""
+    try:
+        storage = str((body or {}).get("storage") or "").strip()
+    except Exception:
+        storage = ""
+    if storage:
+        try:
+            import json as _json
+
+            if not isinstance(_json.loads(storage), dict):
+                raise ValueError("storage 必须是一个 JSON 对象")
+        except Exception as e:
+            return JSONResponse(status_code=400, content={"ok": False, "error": f"storage 解析失败: {e}"})
+    block = _read_provider_block(name)
+    block["cookies"] = cookies
+    block["storage"] = storage
+    try:
+        _write_provider_block(name, block)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "cookies": len([p for p in cookies.split(";") if "=" in p])}
+
+
+@app.post("/api/web/probe")
+async def admin_web_probe(request: Request) -> Any:
+    """Replay a pasted "Copy as cURL" once and return the head of its response.
+
+    Adding a site needs the page's own request and the shape of its frames; this
+    turns "give me a capture" into one paste. Local-only, runs with your cookie,
+    against your own account.
+    """
+    from app.providers.web.probe import probe
+    from app.providers.web.base import WebProviderError as WebError
+
+    try:
+        body = await request.json()
+        curl = str((body or {}).get("curl") or "")
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
+    if not curl.strip():
+        return JSONResponse(status_code=400, content={"ok": False, "error": "curl is required"})
+    try:
+        return await probe(curl)
+    except WebError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        logger.exception("web probe failed")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/web/add-site")
+async def admin_web_add_site(request: Request) -> Any:
+    """Create a provider block for a known web site (no config.json editing).
+
+    Body: ``{"site": "hailuo-web"}``. Idempotent: an existing block is returned
+    as-is. Config-declared sites (``web-http``) are rejected — they need a
+    hand-written ``web`` block.
     """
     try:
-        ProviderConfig(**block)
+        body = await request.json()
+        site_name = str((body or {}).get("site") or "").strip()
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
+    if not site_name:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "site is required"})
+    try:
+        provider = web_providers.ensure_provider(site_name)
     except Exception as e:
-        raise ValueError(f"deepseek-web provider block is invalid: {e}") from e
-
-    cfg = Path(config_path())
-    data: dict[str, Any] = {}
-    if cfg.exists():
-        with open(cfg, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-            if isinstance(loaded, dict):
-                data = loaded
-    providers = data.get("providers")
-    if not isinstance(providers, dict):
-        providers = data["providers"] = {}
-    providers["deepseek-web"] = block
-    _atomic_write_json(cfg, data)
-    reload_config()
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "provider": provider}
 
 
-@app.get("/api/deepseek-web/status")
-async def admin_deepseek_web_status() -> dict[str, Any]:
-    """Return browser/login state of the deepseek-web provider, per account."""
-    return await deepseek_web_provider.get_status()
+@app.get("/api/web/{name}/status")
+async def admin_web_status(name: str) -> dict[str, Any]:
+    """Return browser/login (or token) state of one web provider, per account."""
+    _require_web_provider(name)
+    return await web_providers.get_status(name)
 
 
-@app.post("/api/deepseek-web/login")
-async def admin_deepseek_web_login(request: Request) -> Any:
-    """Open the proxy's browser window on chat.deepseek.com so the user can log in.
+@app.post("/api/web/{name}/login")
+async def admin_web_login(name: str, request: Request) -> Any:
+    """Open this provider's browser window so the user can log in.
 
     The optional JSON body ``{"account": "<id>"}`` selects the account; omitted
-    or empty drives the currently active account.
+    or empty drives the currently active one. HTTP providers have no window and
+    answer with instructions for copying their token instead.
     """
+    _require_web_provider(name)
     account: str | None = None
     try:
         body = await request.json()
@@ -920,18 +986,41 @@ async def admin_deepseek_web_login(request: Request) -> Any:
             account = body.get("account")
     except Exception:
         pass
-    if account is None:
-        account = deepseek_web_provider.active_account()
     try:
-        return await deepseek_web_provider.open_login_window(account)
+        return await web_providers.open_login_window(name, account)
     except Exception as e:
-        logger.error("deepseek-web open login window failed: %s", e)
+        logger.error("%s open login window failed: %s", name, e)
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 
-@app.post("/api/deepseek-web/accounts")
-async def admin_deepseek_web_add_account(request: Request) -> Any:
-    """Add an account id to the deepseek-web provider's api_keys."""
+@app.post("/api/web/{name}/capture-token")
+async def admin_web_capture_token(name: str, request: Request) -> Any:
+    """Open a login window for a direct-HTTP provider and save the token it sends.
+
+    The user logs in and chats in the window that opens; the proxy reads the
+    ``Authorization`` header the page itself sends and writes it into that
+    provider's block in config.json (hot-reloaded). The optional JSON body
+    ``{"timeout": <seconds>}`` bounds the wait (default 300).
+    """
+    _require_web_provider(name)
+    timeout = 300.0
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and body.get("timeout"):
+            timeout = float(body["timeout"])
+    except Exception:
+        pass
+    try:
+        return await web_providers.capture_token(name, timeout)
+    except Exception as e:
+        logger.error("%s token capture failed: %s", name, e)
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+@app.post("/api/web/{name}/accounts")
+async def admin_web_add_account(name: str, request: Request) -> Any:
+    """Add an account id (browser site) or token (HTTP site) to a provider."""
+    _require_web_provider(name)
     try:
         body = await request.json()
         account = str((body or {}).get("account") or "").strip()
@@ -939,7 +1028,19 @@ async def admin_deepseek_web_add_account(request: Request) -> Any:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
     if not account:
         return JSONResponse(status_code=400, content={"ok": False, "error": "account is required"})
-    block = _read_deepseek_web_provider()
+    site = web_providers.site_for_provider(name)
+    if site is not None and site.transport == "http":
+        # A pasted token usually comes with "Bearer " or quotes around it.
+        from app.providers.web.token_capture import clean_token
+
+        cleaned = clean_token(account)
+        if cleaned is None:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "看起来不是有效 token（太短或含空格）；复制 `authorization` 头里 Bearer 后面那段"},
+            )
+        account = cleaned
+    block = _read_provider_block(name)
     keys = [str(k) for k in (block.get("api_keys") or [])]
     if account in keys:
         return JSONResponse(status_code=400, content={"ok": False, "error": "account already exists"})
@@ -947,16 +1048,16 @@ async def admin_deepseek_web_add_account(request: Request) -> Any:
     block["api_keys"] = keys
     block.setdefault("active_account", keys[0])
     try:
-        _write_deepseek_web_provider(block)
+        _write_provider_block(name, block)
     except ValueError as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
     return {"ok": True, "accounts": keys}
 
 
-@app.delete("/api/deepseek-web/accounts/{account}")
-async def admin_deepseek_web_delete_account(account: str) -> Any:
-    """Remove an account id; its browser is closed and profile dir is kept on disk."""
-    block = _read_deepseek_web_provider()
+async def _delete_account(name: str, account: str) -> Any:
+    """Shared implementation of the account-delete endpoints."""
+    _require_web_provider(name)
+    block = _read_provider_block(name)
     keys = [str(k) for k in (block.get("api_keys") or [])]
     if account not in keys:
         return JSONResponse(status_code=404, content={"ok": False, "error": "account not found"})
@@ -965,34 +1066,198 @@ async def admin_deepseek_web_delete_account(account: str) -> Any:
     if block.get("active_account") == account:
         block["active_account"] = keys[0] if keys else ""
     try:
-        _write_deepseek_web_provider(block)
+        _write_provider_block(name, block)
     except ValueError as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
     try:
-        await deepseek_web_provider.close(account, timeout=5)
+        await web_providers.close(name, account, timeout=5)
     except Exception as e:
-        logger.warning("deepseek-web could not close browser of %s: %s", account, e)
+        logger.warning("%s could not close browser of %s: %s", name, account, e)
     return {"ok": True, "accounts": keys, "active_account": block.get("active_account", "")}
 
 
-@app.put("/api/deepseek-web/active-account")
-async def admin_deepseek_web_set_active(request: Request) -> Any:
-    """Switch the globally active deepseek-web account."""
-    try:
-        body = await request.json()
-        account = str((body or {}).get("account") or "")
-    except Exception:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
-    block = _read_deepseek_web_provider()
+@app.delete("/api/web/{name}/accounts")
+async def admin_web_delete_account(name: str, account: str) -> Any:
+    """Remove an account id (or token); its browser is closed, profile kept on disk."""
+    return await _delete_account(name, account)
+
+
+async def _set_active(name: str, account: str) -> Any:
+    """Shared implementation of the active-account endpoints."""
+    _require_web_provider(name)
+    block = _read_provider_block(name)
     keys = [str(k) for k in (block.get("api_keys") or [])]
     if account and keys and account not in keys:
         return JSONResponse(status_code=400, content={"ok": False, "error": "account not in api_keys"})
     block["active_account"] = account
     try:
-        _write_deepseek_web_provider(block)
+        _write_provider_block(name, block)
     except ValueError as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
     return {"ok": True, "active_account": account}
+
+
+@app.put("/api/web/{name}/active-account")
+async def admin_web_set_active(name: str, request: Request) -> Any:
+    """Switch the active account (or token) of one web provider."""
+    try:
+        body = await request.json()
+        account = str((body or {}).get("account") or "")
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
+    return await _set_active(name, account)
+
+
+# -- deepseek-web aliases (kept so older dashboard builds keep working) ------
+
+
+@app.get("/api/deepseek-web/status")
+async def admin_deepseek_web_status() -> dict[str, Any]:
+    """Alias of ``/api/web/deepseek-web/status``."""
+    return await web_providers.get_status("deepseek-web")
+
+
+@app.post("/api/deepseek-web/login")
+async def admin_deepseek_web_login(request: Request) -> Any:
+    """Alias of ``/api/web/deepseek-web/login``."""
+    return await admin_web_login("deepseek-web", request)
+
+
+@app.post("/api/deepseek-web/accounts")
+async def admin_deepseek_web_add_account(request: Request) -> Any:
+    """Alias of ``/api/web/deepseek-web/accounts``."""
+    return await admin_web_add_account("deepseek-web", request)
+
+
+@app.delete("/api/deepseek-web/accounts/{account}")
+async def admin_deepseek_web_delete_account(account: str) -> Any:
+    """Alias of ``/api/web/deepseek-web/accounts``."""
+    return await _delete_account("deepseek-web", account)
+
+
+@app.put("/api/deepseek-web/active-account")
+async def admin_deepseek_web_set_active(request: Request) -> Any:
+    """Alias of ``/api/web/deepseek-web/active-account``."""
+    return await admin_web_set_active("deepseek-web", request)
+
+
+def _response_text(response: dict[str, Any]) -> str:
+    """Collect the text blocks of an Anthropic-shaped response."""
+    parts = []
+    for block in response.get("content") or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text") or ""))
+    return "".join(parts).strip()
+
+
+def _as_response_dict(result: Any) -> dict[str, Any]:
+    """Normalise a provider result (dict or JSONResponse) to a plain dict."""
+    if isinstance(result, dict):
+        return result
+    body = getattr(result, "body", b"") or b""
+    try:
+        parsed = json.loads(body)
+    except Exception:
+        return {"content": [{"type": "text", "text": body[:300].decode("utf-8", "replace")}]}
+    return parsed if isinstance(parsed, dict) else {"content": []}
+
+
+async def _dispatch_model_test(request: Any, route: Any) -> Any:
+    """Send one plain (no-tools, no-ReAct) request through a provider stack."""
+    if web_providers.is_web_provider(route.provider_type):
+        return await web_providers.send_non_streaming(request, route)
+    if route.force_stream:
+        return await _handle_force_stream_non_streaming(request, route, request.model)
+    if route.provider_type == "gemini":
+        return from_gemini_response(await gemini_provider.send_non_streaming(request, route), request.model)
+    if route.provider_type == "claude":
+        return await anthropic_provider.send_non_streaming(request.model_dump(exclude_none=True), route)
+    raw = await openai_provider.send_non_streaming(request, route)
+    if route.use_responses:
+        return from_openai_responses_response(raw, request.model)
+    return from_openai_chat_response(raw, request.model)
+
+
+@app.post("/api/providers/{provider}/test")
+async def admin_test_provider_model(provider: str, request: Request) -> dict[str, Any]:
+    """Send one tiny chat through a provider/model and report what came back.
+
+    This exercises the real provider stack (minus tools and ReAct), so a green
+    result means the key, base_url and model id actually work — not that the
+    config merely parses. Always answers 200 with an ``ok`` flag, so the
+    dashboard can show an upstream error verbatim.
+
+    Body (all optional): ``{"model": "...", "prompt": "...", "max_tokens": 64,
+    "timeout": 60}``.
+    """
+    cfg = load_config()
+    body: dict[str, Any] = {}
+    try:
+        parsed = await request.json()
+        if isinstance(parsed, dict):
+            body = parsed
+    except Exception:
+        pass
+
+    model = str(body.get("model") or "")
+    prov = cfg.providers.get(provider)
+    if prov is None or not model or model not in prov.models:
+        return {"ok": False, "error": f"unknown provider/model: {provider}/{model or '?'}"}
+
+    prompt = str(body.get("prompt") or "ping：只回复两个字「收到」")
+    try:
+        max_tokens = max(8, int(body.get("max_tokens") or 64))
+        timeout = float(body.get("timeout") or 60.0)
+    except (TypeError, ValueError):
+        max_tokens, timeout = 64, 60.0
+
+    route = ResolvedRoute(
+        provider_name=provider,
+        provider=prov,
+        model_id=model,
+        model_config=prov.models[model],
+        upstream_config=cfg.upstream,
+    )
+    from app.models import AnthropicRequest
+
+    test_request = AnthropicRequest(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+    )
+    started = time.monotonic()
+    try:
+        async with asyncio.timeout(timeout):
+            response = _as_response_dict(await _dispatch_model_test(test_request, route))
+    except Exception as e:
+        logger.warning("model test failed [%s/%s]: %s", provider, model, e)
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": model,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "error": f"{type(e).__name__}: {e}" if str(e) else type(e).__name__,
+        }
+
+    text = _response_text(response)
+    latency_ms = int((time.monotonic() - started) * 1000)
+    if not text:
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": model,
+            "latency_ms": latency_ms,
+            "error": "没有返回文本: " + json.dumps(response, ensure_ascii=False)[:300],
+        }
+    logger.info("model test ok [%s/%s] %dms", provider, model, latency_ms)
+    return {
+        "ok": True,
+        "provider": provider,
+        "model": model,
+        "latency_ms": latency_ms,
+        "text": text[:500],
+        "usage": response.get("usage"),
+    }
 
 
 @app.get("/api/config")

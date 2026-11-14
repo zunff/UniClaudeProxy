@@ -1,3 +1,5 @@
-# Optional: only needed for the deepseek-web provider (drives chat.deepseek.com in a browser).
-# Uses your installed Chrome by default (DEEPSEEK_WEB_CHANNEL=chrome); otherwise run: playwright install chromium
+# Optional: only needed for web providers that use the *browser* transport
+# (app/providers/web/engine.py) — currently `deepseek-web` and `hailuo-web`: they
+# drive the real chat page. HTTP-transport sites (`web-http`) only need httpx.
+# Uses your installed Chrome by default (<SITE>_CHANNEL=chrome); otherwise run: playwright install chromium
 playwright>=1.40

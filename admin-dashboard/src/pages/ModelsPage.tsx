@@ -23,6 +23,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useAdmin, type RawAppConfig } from "@/store/admin";
+import { useWebSites } from "@/lib/webSites";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -1207,7 +1208,9 @@ export default function ModelsPage() {
     deleteBinding,
     saveConfig,
     loading,
+    setNav,
   } = useAdmin();
+  const { sites: webSites, isWebProvider } = useWebSites();
   const [filter, setFilter] = useState("");
   const [bindTarget, setBindTarget] = useState<string | null>(null);
   const [providerEdit, setProviderEdit] = useState<string | "new" | null>(null);
@@ -1227,8 +1230,15 @@ export default function ModelsPage() {
     pricesResp?.providers ??
     {}) as Record<string, any>;
 
+  // Web providers (deepseek-web / hailuo-web / web-http …) live on the 网页端
+  // page: their login and mounted routes are maintained there, not here.
+  const webProviderCount = Object.entries(providersMap).filter(([name, p]) =>
+    isWebProvider(name, p?.provider_type)
+  ).length;
+
   const providers = useMemo(() => {
     return Object.entries(providersMap)
+      .filter(([name, p]) => !isWebProvider(name, p?.provider_type))
       .filter(
         ([name, p]) =>
           !filter.trim() ||
@@ -1238,7 +1248,7 @@ export default function ModelsPage() {
           )
       )
       .map(([name, p]) => ({ name, provider: p }));
-  }, [providersMap, filter]);
+  }, [providersMap, filter, webSites]);
 
   const priceNames = Object.keys(pricesResp?.prices ?? {});
   const priceBindings = pricesResp?.price_bindings ?? {};
@@ -1349,6 +1359,24 @@ export default function ModelsPage() {
             <span className="font-semibold text-slate-300">已配置的 PROVIDERS ({providers.length})</span>
           </div>
         </div>
+
+        {webProviderCount > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-xs text-slate-400 font-mono">
+            <Globe className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+            <span>
+              {webProviderCount} 个网页端 Provider 已统一到「网页端」页面维护（登录 / token 与挂载模型）
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-[11px] text-sky-300 hover:text-sky-200"
+              onClick={() => setNav("deepseek")}
+            >
+              去网页端
+              <ChevronRight className="w-3 h-3" />
+            </Button>
+          </div>
+        )}
 
         {/* 4-column responsive grid on wide screen */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-5">

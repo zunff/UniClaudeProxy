@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { useAdmin, type ModelRoute } from "@/store/admin";
+import { useWebSites } from "@/lib/webSites";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -352,6 +353,7 @@ export default function MappingsPage() {
     fetchPrices,
     loading,
   } = useAdmin();
+  const { routes: webRoutes } = useWebSites();
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -382,8 +384,13 @@ export default function MappingsPage() {
         routes.push(`${pname}/${modelId}`);
       }
     }
+    // Web sites stay permanently in the dropdown: they are not on the Models
+    // page any more, and a known site is selectable even before it is added.
+    for (const r of webRoutes) {
+      if (!routes.includes(r)) routes.push(r);
+    }
     return routes;
-  }, [config, pricesResp]);
+  }, [config, pricesResp, webRoutes]);
 
   const existingModels = Object.keys(config?.models ?? {});
 

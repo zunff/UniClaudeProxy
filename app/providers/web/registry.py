@@ -40,6 +40,16 @@ def is_web_provider(provider_type: str) -> bool:
     return provider_type in SITES
 
 
+def looks_like_web_provider(provider_type: str) -> bool:
+    """True for a ``provider_type`` that claims to be a web site (``*-web``).
+
+    Catches blocks left behind by a removed site (or a typo): the dashboard
+    lists them on the 网页端 page as broken instead of showing them as a normal
+    API provider on the Models page.
+    """
+    return provider_type in SITES or provider_type.endswith("-web")
+
+
 def site_for(provider_type: str) -> Optional[WebSite]:
     """Return the site serving a ``provider_type`` (None when unknown)."""
     return SITES.get(provider_type)
@@ -67,6 +77,24 @@ def configured_providers() -> list[dict[str, Any]]:
     for name, provider in load_config().providers.items():
         site = SITES.get(provider.provider_type)
         if site is None:
+            if not looks_like_web_provider(provider.provider_type):
+                continue
+            # A block whose site is gone (or misspelt): keep it visible so the
+            # user sees why requests to it fail, instead of it silently turning
+            # into a normal provider on the Models page.
+            out.append({
+                "provider": name,
+                "provider_type": provider.provider_type,
+                "label": provider.provider_type,
+                "transport": "unknown",
+                "home": provider.base_url or "",
+                "active_account": provider.active_account or "",
+                "accounts": len(provider.resolved_api_keys()),
+                "token_hint": None,
+                "cookies_configured": bool(getattr(provider, "cookies", "")),
+                "models": list(provider.models or {}),
+                "unregistered": True,
+            })
             continue
         runtime = runtime_for(site.name)
         out.append({
@@ -78,7 +106,10 @@ def configured_providers() -> list[dict[str, Any]]:
             "active_account": runtime.account_for(provider),
             "accounts": len(provider.resolved_api_keys()),
             "token_hint": site.token_hint if site.transport == "http" else None,
-        "cookies_configured": bool(getattr(provider, "cookies", "")),
+            "cookies_configured": bool(getattr(provider, "cookies", "")),
+            # Mounted model ids: the dashboard lists a web provider's routes
+            # here instead of on the Models page.
+            "models": list(provider.models or {}),
         })
     out.sort(key=lambda item: item["label"])
     return out
@@ -101,6 +132,9 @@ def site_templates() -> list[dict[str, Any]]:
             "home": site.home,
             "configured": site.name in configured,
             "provider": configured.get(site.name),
+            # Routes this site would serve once added — the mapping dropdown
+            # keeps them listed even before the provider exists in config.json.
+            "default_models": dict(site.default_models),
         })
     return out
 
@@ -327,6 +361,7 @@ __all__ = [
     "ensure_provider",
     "get_status",
     "is_web_provider",
+    "looks_like_web_provider",
     "open_login_window",
     "runtime_for",
     "site_for",

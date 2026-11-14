@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Check, ExternalLink, Globe, KeyRound, Plus, RefreshCw, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  Check,
+  ExternalLink,
+  Globe,
+  KeyRound,
+  Plus,
+  RefreshCw,
+  Route,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAdmin } from "@/store/admin";
 import {
   Card,
   CardContent,
@@ -50,9 +61,12 @@ interface SiteEntry {
   provider: string;
   provider_type: string;
   label: string;
-  transport: "browser" | "http";
+  transport: "browser" | "http" | "unknown";
   home: string;
   accounts: number;
+  models?: string[];
+  /** `provider_type` has no site implementation (removed site or a typo). */
+  unregistered?: boolean;
 }
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
@@ -97,6 +111,7 @@ function describe(a: AccountStatus): { label: string; tone: string; hint: string
 }
 
 export default function WebProvidersPage() {
+  const { config, saveConfig, setNav } = useAdmin();
   const [sites, setSites] = useState<SiteEntry[]>([]);
   const [templates, setTemplates] = useState<SiteTemplate[]>([]);
   const [provider, setProvider] = useState<string>("");
@@ -111,6 +126,12 @@ export default function WebProvidersPage() {
 
   const isHttp = status?.transport === "http";
 
+  const currentSite = useMemo(
+    () => sites.find((s) => s.provider === provider),
+    [sites, provider],
+  );
+  const isUnregistered = Boolean(currentSite?.unregistered);
+
   const refreshSites = useCallback(async () => {
     try {
       const data = await call<{ sites: SiteEntry[]; templates?: SiteTemplate[] }>("/api/web/sites");
@@ -124,12 +145,18 @@ export default function WebProvidersPage() {
 
   const refresh = useCallback(async () => {
     if (!provider) return;
+    // A block with no site implementation has no status endpoint: show the
+    // warning card instead of hammering a 404 every 3s.
+    if (!currentSite || currentSite.unregistered) {
+      setStatus(null);
+      return;
+    }
     try {
       setStatus(await call<WebStatus>(`/api/web/${encodeURIComponent(provider)}/status`));
     } catch (e) {
       toast.error(`读取状态失败: ${(e as Error).message}`);
     }
-  }, [provider]);
+  }, [provider, currentSite]);
 
   useEffect(() => {
     refreshSites();
@@ -307,13 +334,63 @@ ${res.head}`,
   const active = status?.active_account ?? "";
   const activeLabel = status?.active_account_label ?? active;
 
+  // Mounted models are maintained here now (they were taken off the Models page).
+  const siteModels = useMemo(
+    () => sites.find((s) => s.provider === provider)?.models ?? [],
+    [sites, provider],
+  );
+
+  const removeModel = async (modelId: string) => {
+    if (!config) return;
+    if (!window.confirm(`删除挂载模型 ${provider}/${modelId}？已经引用它的模型映射会失效。`)) return;
+    setPending(`model:${modelId}`);
+    try {
+      const next = { ...config };
+      next.providers = { ...(next.providers ?? {}) };
+      const p = { ...next.providers[provider] };
+      p.models = { ...(p.models ?? {}) };
+      delete p.models[modelId];
+      next.providers[provider] = p;
+      await saveConfig(next);
+      await refreshSites();
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const removeProvider = async () => {
+    if (!config || !provider) return;
+    if (
+      !window.confirm(
+        `删除 provider 块 ${provider}？它的挂载模型和引用它的模型映射都会失效。`,
+      )
+    )
+      return;
+    setPending("delete-provider");
+    try {
+      const next = { ...config };
+      next.providers = { ...(next.providers ?? {}) };
+      delete next.providers[provider];
+      await saveConfig(next);
+      setProvider("");
+      setStatus(null);
+      await refreshSites();
+    } finally {
+      setPending(null);
+    }
+  };
+
   const hint = useMemo(() => {
-    if (!status) return "";
+    if (!status) {
+      return isUnregistered
+        ? `config.json 里的 provider_type「${currentSite?.provider_type}」没有对应的网页端实现。`
+        : "";
+    }
     if (isHttp) {
       return `${status.label} 直接调用站点接口(config.json 里的 api_key / api_keys),不需要浏览器。token 获取方式:${status.token_hint ?? "见文档"}。`;
     }
     return `${status.provider_type} 路由通过 proxy 自己启动的浏览器驱动 ${status.home}。每个账号有独立的浏览器 profile,必须分别在那个窗口里登录;在你日常使用的浏览器里登录不会生效。只有“当前账号”会被请求使用。`;
-  }, [status, isHttp]);
+  }, [status, isHttp, isUnregistered, currentSite]);
 
   return (
     <div className="space-y-6">
@@ -380,10 +457,16 @@ ${res.head}`,
               key={s.provider}
               size="sm"
               variant={s.provider === provider ? "default" : "outline"}
+              className={cn(s.unregistered && "border-amber-500/40 text-amber-300")}
               onClick={() => setProvider(s.provider)}
             >
-              {s.transport === "http" ? <KeyRound className="h-3.5 w-3.5" /> : <Globe className="h-3.5 w-3.5" />}
+              {s.transport === "http" ? (
+                <KeyRound className="h-3.5 w-3.5" />
+              ) : (
+                <Globe className="h-3.5 w-3.5" />
+              )}
               {s.label}
+              {s.unregistered && <span className="text-[10px]">· 未注册</span>}
             </Button>
           ))}
         </div>
@@ -395,14 +478,38 @@ ${res.head}`,
             {isHttp ? (
               <KeyRound className="h-5 w-5 text-emerald-400" />
             ) : (
-              <Globe className="h-5 w-5 text-sky-400" />
+              <Globe className={cn("h-5 w-5", isUnregistered ? "text-amber-400" : "text-sky-400")} />
             )}
-            {status?.label ?? "网页端"}
+            {status?.label ?? currentSite?.label ?? "网页端"}
+            <span className="font-mono text-xs font-normal text-slate-500">
+              {currentSite?.provider}
+            </span>
           </CardTitle>
           <CardDescription>{hint}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {!isHttp && (
+          {isUnregistered && (
+            <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+              <p className="text-sm text-amber-300">
+                provider_type「{currentSite?.provider_type}」没有对应的网页端实现，请求会直接报错。
+              </p>
+              <p className="text-xs text-amber-200/70">
+                可能是站点已经被移除，或者 provider_type 写错了。改对 provider_type（deepseek-web /
+                hailuo-web / web-http）后这个站点就能用；用不上的话直接删掉这个 provider 块。
+              </p>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={removeProvider}
+                disabled={pending === "delete-provider"}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                删除该 Provider
+              </Button>
+            </div>
+          )}
+
+          {status && !isHttp && (
             <div className="space-y-2 rounded-lg border border-sky-500/30 bg-sky-500/5 p-3">
               <p className="text-sm text-slate-100">
                 用 cookie 免登录{status?.cookies_configured ? "（已保存）" : ""}
@@ -452,10 +559,57 @@ ${res.head}`,
               </Button>
             </div>
           )}
+          {currentSite && (
+            <div className="space-y-2 rounded-lg border border-brand-borderSubtle bg-slate-950/40 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Route className="h-3.5 w-3.5 text-purple-400" />
+                <span className="font-mono text-xs text-slate-300">
+                  挂载模型 ({siteModels.length})
+                </span>
+                <span className="font-mono text-[11px] text-slate-500">
+                  这些路由常驻在「模型映射」的下拉框里
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto h-6 px-2 text-[11px] text-purple-300 hover:text-purple-200"
+                  onClick={() => setNav("mappings")}
+                >
+                  去模型映射
+                  <ChevronRight className="h-3 w-3" />
+                </Button>
+              </div>
+              {siteModels.length === 0 ? (
+                <p className="rounded border border-dashed border-brand-borderSubtle py-2 text-center font-mono text-xs text-slate-500">
+                  该站点尚未挂载模型
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {siteModels.map((modelId) => (
+                    <span
+                      key={modelId}
+                      className="group flex items-center gap-1.5 rounded-md border border-brand-borderSubtle bg-slate-950/60 py-1 pl-2 pr-1 font-mono text-[11px] text-slate-200"
+                    >
+                      {provider}/{modelId}
+                      <button
+                        onClick={() => removeModel(modelId)}
+                        disabled={pending === `model:${modelId}`}
+                        className="text-slate-500 transition-colors hover:text-rose-400 disabled:opacity-50"
+                        title="删除挂载模型"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {sites.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              还没有配置网页端 provider。在 config.json 里添加一个 provider_type 为 deepseek-web / hailuo-web /
-              web-http 的 provider 即可。
+              还没有配置网页端 provider。点上方「可添加的站点」一键添加 deepseek-web / hailuo-web,
+              或在 config.json 里声明一个 provider_type 为 web-http 的站点。
             </p>
           )}
 
